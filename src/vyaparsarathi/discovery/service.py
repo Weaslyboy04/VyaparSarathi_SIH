@@ -10,8 +10,9 @@ which is a programming error, not a runtime condition.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 
-from vyaparsarathi.categories.osm_query_tags import selectors_for
+from vyaparsarathi.categories.osm_query_tags import selectors_for_many
 from vyaparsarathi.config import Settings, get_settings
 from vyaparsarathi.database.memory import InMemoryBusinessRepository
 from vyaparsarathi.database.repository import BusinessRepository
@@ -74,6 +75,7 @@ class DiscoveryService:
         radius_m: int,
         *,
         candidate: int | None = None,
+        also_fetch: Sequence[BusinessCategory] = (),
     ) -> DiscoveryResult:
         """Run the Phase 1 pipeline for ``location_text``.
 
@@ -82,6 +84,13 @@ class DiscoveryService:
         failing on ambiguity. The geocoder is still queried exactly once; no
         second lookup is made. An out-of-range ``candidate`` raises ``ValueError``
         (candidate 1 is never assumed).
+
+        ``also_fetch`` widens the single Overpass query to cover extra categories
+        in the same request (Phase 3 scores several candidate businesses over one
+        fetch). The returned ``query`` / ``category`` still name the primary
+        ``category``; every returned business is normalized and radius-clamped
+        exactly as before. The default ``()`` reproduces Phase 1 behaviour
+        unchanged — the fetch then asks only for ``category``'s selectors.
         """
         location_text = location_text.strip()
         if not location_text:
@@ -148,7 +157,18 @@ class DiscoveryService:
             )
 
         # 3. Which OSM tags to ask for ------------------------------------
-        selectors = selectors_for(category)
+        # Phase 3 may widen the fetch to sibling candidate categories; a single-
+        # element list reproduces the Phase 1 selector set exactly.
+        fetch_categories = [category, *also_fetch]
+        selectors = selectors_for_many(fetch_categories)
+        if len(fetch_categories) > 1:
+            extra = ", ".join(sorted({c.value for c in also_fetch if c != category}))
+            if extra:
+                warnings.append(
+                    f"Overpass query widened beyond {category.value!r} to also cover: {extra} "
+                    "(Phase 3 candidate scan); every result is still normalized and "
+                    "radius-clamped as usual."
+                )
         if not selectors:
             warnings.append(f"Category {category!r} has no OSM tag mapping yet — nothing to query.")
             return DiscoveryResult(

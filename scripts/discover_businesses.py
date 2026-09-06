@@ -25,6 +25,13 @@ Add ``--assess`` (implies ``--metrics --demand``) to also run Phase 2D: fuse the
 2B competition and 2C demand into an overall market label (underserved / served /
 crowded / thin market / mixed / insufficient evidence) with positive signals,
 concerns and data caveats.
+
+Add ``--opportunity`` (implies a widened / union Overpass fetch) to run Phase 3:
+score and rank a curated shortlist of candidate businesses (plus the proposed
+one) for this location and the entrepreneur's resources, and say whether the
+proposed business is the best of them or an alternative is materially better.
+``--cash INR``, ``--asset KIND`` (repeatable) and ``--experience CATEGORY``
+(repeatable) supply the entrepreneur profile.
 """
 
 from __future__ import annotations
@@ -34,7 +41,11 @@ import sys
 
 from vyaparsarathi.config import get_settings
 from vyaparsarathi.database import InMemoryBusinessRepository, create_repository
-from vyaparsarathi.discovery import DiscoveryService, acquire_demand_evidence
+from vyaparsarathi.discovery import (
+    DiscoveryService,
+    acquire_demand_evidence,
+    acquire_opportunity_evidence,
+)
 from vyaparsarathi.geocoding import NominatimGeocoder
 from vyaparsarathi.market import (
     analyze_competitors,
@@ -43,6 +54,7 @@ from vyaparsarathi.market import (
     compute_demand_signals,
     proposed_from_category,
     resolve_proposed_business,
+    score_opportunities,
 )
 from vyaparsarathi.market.assessment_models import MarketAssessmentResult, MarketAssessmentStatus
 from vyaparsarathi.market.demand_models import DemandSignalsResult, DemandStatus
@@ -51,6 +63,9 @@ from vyaparsarathi.market.metrics_models import (
     CompetitionMetricsStatus,
 )
 from vyaparsarathi.market.models import CompetitorAnalysisResult, CompetitorAnalysisStatus
+from vyaparsarathi.market.opportunity_config import DEFAULT_OPPORTUNITY_CONFIG
+from vyaparsarathi.market.opportunity_models import OpportunityAnalysisResult, OpportunityStatus
+from vyaparsarathi.models.profile import AssetKind, EntrepreneurProfile
 from vyaparsarathi.models.results import DiscoveryResult, DiscoveryStatus
 from vyaparsarathi.models.taxonomy import BusinessCategory
 from vyaparsarathi.sources.osm import OverpassSource
@@ -112,6 +127,34 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="run Phase 2D: overall market assessment — combine 2B competition and 2C demand "
         "into a market label (implies --metrics --demand)",
+    )
+    parser.add_argument(
+        "--opportunity",
+        action="store_true",
+        help="run Phase 3: score & rank a curated shortlist of candidate businesses (plus the "
+        "proposed one) for this location and profile; widens the Overpass fetch to one union "
+        "query covering every candidate",
+    )
+    parser.add_argument(
+        "--cash",
+        type=int,
+        default=None,
+        metavar="INR",
+        help="entrepreneur's stated liquid cash in rupees (Phase 3 profile)",
+    )
+    parser.add_argument(
+        "--asset",
+        action="append",
+        metavar="KIND",
+        help="an asset already owned, e.g. --asset storefront (repeatable; Phase 3 profile). "
+        f"Valid: {', '.join(sorted(a.value for a in AssetKind))}",
+    )
+    parser.add_argument(
+        "--experience",
+        action="append",
+        metavar="CATEGORY",
+        help="an internal category the entrepreneur has trade experience in, e.g. "
+        "--experience dairy (repeatable; Phase 3 profile)",
     )
     parser.add_argument(
         "--subtype",
@@ -457,6 +500,93 @@ def _render_assessment(a: MarketAssessmentResult) -> str:
     return "\n".join(lines)
 
 
+def _render_opportunity(r: OpportunityAnalysisResult) -> str:
+    lines = ["", "Business Opportunity & Pivot Analysis (Phase 3)", ""]
+    lines.append(f"Location:            {r.location_text or 'n/a'}")
+    lines.append(f"Analysis radius:    {r.analysis_radius_m / 1000:.1f} km")
+    proposed = r.proposed_category.value if r.proposed_category else "(none stated)"
+    lines.append(f"Proposed business:  {proposed}")
+    lines.append(f"Status:             {r.status.value}")
+    lines.append(
+        f"Profile completeness: {r.profile_completeness:.0%}   "
+        f"Market-data confidence: {r.market_data_confidence:.2f}"
+    )
+    lines.append("")
+    lines.append(f"STANCE:  {r.stance.value.upper()}")
+    lines.append(f"  {r.stance_reason}")
+    if r.recommended_pivot is not None:
+        lines.append(f"  Recommended pivot: {r.recommended_pivot.value}")
+
+    lines.append("")
+    lines.append(
+        f"  {'#':>2}  {'Business':<20} {'Score':>5}  {'Market label':<22} "
+        f"{'Evidence':<10} {'Capital fit':<13} {'Cov':>4}"
+    )
+    for c in r.candidates:
+        score = "n/a" if c.opportunity_score is None else str(c.opportunity_score)
+        ev = "sufficient" if c.evidence_sufficient else "thin"
+        star = " *" if c.is_proposed else ""
+        cap = "" if c.weight_coverage_pct == 100 else f" [{c.weight_coverage_pct}% wt]"
+        lines.append(
+            f"  {c.rank:>2}  {c.category.value:<20} {score:>5}  {c.market_label.value:<22} "
+            f"{ev:<10} {c.capital_fit.value:<13} {c.coverage_confidence:>4.2f}{star}{cap}"
+        )
+        if c.capability_incomplete:
+            lines.append(f"      (capability check incomplete: {', '.join(c.components_missing)})")
+
+    top = r.candidates[0] if r.candidates else None
+    if top is not None:
+        lines.append("")
+        lines.append(f"Top-ranked ({top.category.value}) — component breakdown:")
+        for comp in top.components:
+            if comp.available and comp.value is not None:
+                lines.append(
+                    f"  {comp.name:<20} {comp.value:>5.0f}/100  x{comp.effective_weight:.2f} "
+                    f"= {comp.contribution:.1f}"
+                )
+            else:
+                lines.append(f"  {comp.name:<20}  (not scored: {comp.unavailable_kind or 'n/a'})")
+        for reason in top.reasons:
+            lines.append(f"  - {reason}")
+
+    if r.caveats:
+        lines.append("")
+        lines.append("Caveats:")
+        lines.extend(f"  - {c}" for c in r.caveats)
+    if r.warnings:
+        lines.append("")
+        lines.append("Warnings:")
+        lines.extend(f"  - {w}" for w in r.warnings)
+    return "\n".join(lines)
+
+
+def _build_profile(
+    args: argparse.Namespace, proposed_category: BusinessCategory, resolved: bool
+) -> EntrepreneurProfile:
+    assets: set[AssetKind] = set()
+    for raw in args.asset or []:
+        try:
+            assets.add(AssetKind(raw.strip().lower()))
+        except ValueError:
+            valid = ", ".join(sorted(a.value for a in AssetKind))
+            raise SystemExit(f"error: unknown --asset {raw!r}. Valid: {valid}") from None
+    experience: set[BusinessCategory] = set()
+    for raw in args.experience or []:
+        try:
+            experience.add(BusinessCategory(raw.strip().lower()))
+        except ValueError:
+            valid = ", ".join(sorted(c.value for c in BusinessCategory))
+            raise SystemExit(f"error: unknown --experience {raw!r}. Valid: {valid}") from None
+    return EntrepreneurProfile(
+        liquid_cash_inr=args.cash,
+        assets=assets,
+        experience_categories=experience,
+        proposed_category=proposed_category if resolved else None,
+        proposed_subtypes=list(args.subtype or []),
+        proposed_raw_text=args.proposed or args.category,
+    )
+
+
 def _build_analysis(args: argparse.Namespace, result: DiscoveryResult, category: BusinessCategory):
     subtypes = args.subtype or []
     if args.proposed:
@@ -485,11 +615,36 @@ def main(argv: list[str] | None = None) -> int:
 
     radius_m = int(round(args.radius * 1000))
 
+    # Phase 3 needs the proposed category up front (for the candidate universe
+    # and the profile) and widens the single Overpass fetch to one union query.
+    opp_proposed = None
+    also_fetch: tuple[BusinessCategory, ...] = ()
+    opp_candidates: list[BusinessCategory] = []
+    if args.opportunity:
+        if args.proposed:
+            opp_proposed = resolve_proposed_business(args.proposed, args.subtype or [])
+            proposed_cat = opp_proposed.category
+            proposed_resolved = opp_proposed.resolved
+        else:
+            proposed_cat = category
+            proposed_resolved = category is not BusinessCategory.UNKNOWN
+        opp_candidates = [
+            BusinessCategory(v) for v in DEFAULT_OPPORTUNITY_CONFIG.candidate_categories
+        ]
+        if proposed_resolved and proposed_cat not in opp_candidates:
+            opp_candidates.append(proposed_cat)
+        also_fetch = tuple(c for c in opp_candidates if c != category)
+
     repository = create_repository() if args.db else InMemoryBusinessRepository()
     with NominatimGeocoder(settings) as geocoder, OverpassSource(settings) as source:
         service = DiscoveryService(geocoder, source, repository, settings)
+        # Keep the call identical to a plain Phase 1 run unless Phase 3 asked to
+        # widen the fetch.
+        extra = {"also_fetch": also_fetch} if also_fetch else {}
         try:
-            result = service.discover(args.location, category, radius_m, candidate=args.candidate)
+            result = service.discover(
+                args.location, category, radius_m, candidate=args.candidate, **extra
+            )
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -516,8 +671,23 @@ def main(argv: list[str] | None = None) -> int:
         else None
     )
 
+    opportunity = None
+    if args.opportunity:
+        proposed_cat = opp_proposed.category if opp_proposed is not None else category
+        proposed_resolved = (
+            opp_proposed.resolved
+            if opp_proposed is not None
+            else category is not BusinessCategory.UNKNOWN
+        )
+        profile = _build_profile(args, proposed_cat, proposed_resolved)
+        with OverpassClient(settings) as opp_client:
+            opp_evidence = acquire_opportunity_evidence(
+                result, opp_candidates, client=opp_client, settings=settings
+            )
+        opportunity = score_opportunities(opp_evidence, profile)
+
     if args.json:
-        payload = assessment or demand or metrics or analysis or result
+        payload = opportunity or assessment or demand or metrics or analysis or result
         print(payload.model_dump_json(indent=2))
     else:
         print(_render_human(result, args.max_display))
@@ -529,6 +699,8 @@ def main(argv: list[str] | None = None) -> int:
             print(_render_demand(demand))
         if assessment is not None:
             print(_render_assessment(assessment))
+        if opportunity is not None:
+            print(_render_opportunity(opportunity))
 
     # Exit non-zero on a non-OK outcome so scripts can detect it.
     code = 0 if result.status is DiscoveryStatus.OK else 1
@@ -543,6 +715,11 @@ def main(argv: list[str] | None = None) -> int:
     }:
         code = 2
     if assessment is not None and assessment.status is not MarketAssessmentStatus.OK:
+        code = 2
+    # Phase 3 outcomes are all valid analyses (OK / no_evidence); only a genuine
+    # "nothing to score" is an error. Thin-evidence results still exit 0, matching
+    # Phase 2D (an `insufficient_evidence` label there keeps status OK).
+    if opportunity is not None and opportunity.status is OpportunityStatus.NO_CANDIDATES:
         code = 2
     return code
 

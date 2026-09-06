@@ -48,6 +48,20 @@ from vyaparsarathi.market.models import (
     ProposedBusiness,
     Relationship,
 )
+from vyaparsarathi.market.opportunity import score_opportunities
+from vyaparsarathi.market.opportunity_config import (
+    DEFAULT_OPPORTUNITY_CONFIG,
+    OpportunityConfig,
+)
+from vyaparsarathi.market.opportunity_models import (
+    CapitalFit,
+    FinancialFitInput,
+    OpportunityAnalysisResult,
+    OpportunityStatus,
+    ScoreComponent,
+    ScoredCandidate,
+    Stance,
+)
 from vyaparsarathi.market.proposed import proposed_from_category, resolve_proposed_business
 from vyaparsarathi.market.relationships import relationship_for
 
@@ -89,4 +103,14 @@ __all__ = [
     "CatchmentScale",
     "ScaleTier",
     "Finding",
+    "score_opportunities",
+    "OpportunityConfig",
+    "DEFAULT_OPPORTUNITY_CONFIG",
+    "OpportunityAnalysisResult",
+    "OpportunityStatus",
+    "ScoredCandidate",
+    "ScoreComponent",
+    "CapitalFit",
+    "Stance",
+    "FinancialFitInput",
 ]

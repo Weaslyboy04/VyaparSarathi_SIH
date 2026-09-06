@@ -100,9 +100,42 @@ score** — that is Phase 3 (`CLAUDE.md` §12). See
 [`docs/phase-2d.md`](docs/phase-2d.md). Tunables (thresholds, the label matrix,
 message templates) live in `market/assessment_config.py`.
 
-Nothing beyond Phase 2D is implemented (no opportunity/pivot scoring across
-alternatives, viability, finance, RAG, LLM, WhatsApp, DPR, Google Places,
-SensiBook).
+## Phase 3 — Business Opportunity & Pivot Engine
+
+**Input:** a location + radius + the entrepreneur's proposed business, and an
+`EntrepreneurProfile` (liquid cash, owned assets, trade experience — all
+user-provided and unverified).
+**Output:** an `OpportunityAnalysisResult` — a curated shortlist of candidate
+businesses (plus the proposed one) each scored **0–100** and ranked, with a
+**stance**: `proposed_is_best` / `alternative_materially_better` (with a named
+`recommended_pivot`) / `alternatives_comparable` / `no_proposal_to_compare` /
+`no_recommendation`.
+
+Phase 3 calls the Phase 2A→2B→2C→2D pipeline once per candidate over **one**
+union Overpass fetch — it re-queries nothing. The score decomposes into named
+`ScoreComponent`s: `market_opportunity` (0.60, the Phase 2D label **alone**),
+`asset_fit` (0.25, owned assets vs a curated per-category relevance table) and
+`experience_fit` (0.15, reusing `relationship_for`); missing components
+renormalise visibly. Ranking and the pivot recommendation are gated on the 2D
+label lattice, `evidence_sufficient`, `capability_incomplete` and a
+**capital-fit screen** — never on the number alone. The capital screen
+(`CapitalFit`: unknown / affordable / stretch / out_of_reach) is an indicative
+ordinal check, clearly captioned as *not* a financial assessment and *not* a
+claim of impossibility — Phase 4 replaces it.
+
+`score_opportunities()` is pure (`tests/test_market_purity.py`). It computes **no**
+finance — project cost, EMI, DSCR, cash flow, loan structure, moratorium and
+stress tests are Phase 4. Confidence (`market_data_confidence`,
+`profile_completeness`) is reported once, unmultiplied, and changes no score. The
+per-candidate data-coverage confidence is recomputed in
+`discovery/opportunity_acquisition.py` so a union fetch does not inflate a
+zero-competitor candidate into `underserved`. See
+[`docs/phase-3.md`](docs/phase-3.md); tunables (the candidate universe, weights,
+`asset_relevance`, `capital_bands`, caveats) live in
+`market/opportunity_config.py`.
+
+Nothing beyond Phase 3 is implemented (no deterministic financial engine, RAG,
+scheme routing, LLM orchestration, WhatsApp, DPR, Google Places, SensiBook).
 
 ## Setup
 
@@ -194,10 +227,27 @@ python scripts/discover_businesses.py \
 With `--assess --json` the CLI emits the `MarketAssessmentResult` (JSON
 precedence: assessment → demand → metrics → analysis → discovery).
 
+Add `--opportunity` to run Phase 3 — score & rank a curated shortlist of
+candidate businesses (plus the proposed one) for this location and the
+entrepreneur's resources. It widens the Overpass fetch to one union query
+covering every candidate. `--cash INR`, `--asset KIND` (repeatable) and
+`--experience CATEGORY` (repeatable) supply the profile:
+
+```bash
+python scripts/discover_businesses.py \
+    --location "Bhagwanpur, Vaishali, Bihar" --category grocery --radius 8 \
+    --opportunity --cash 650000 --asset storefront --asset vehicle \
+    --experience dairy
+```
+
+With `--opportunity --json` the CLI emits the `OpportunityAnalysisResult` (JSON
+precedence: opportunity → assessment → demand → metrics → analysis → discovery).
+Phase 3 outcomes are all valid analyses, so `ok` and `no_evidence` both exit `0`.
+
 ## Tests, lint, types
 
 ```bash
-pytest            # 340 unit tests, fully offline (all HTTP mocked with respx)
+pytest            # 369 unit tests, fully offline (all HTTP mocked with respx)
 ruff check .
 ruff format --check .
 mypy              # checks src/vyaparsarathi
@@ -225,7 +275,8 @@ contained follow-up behind the same `BusinessRepository` interface — see
 src/vyaparsarathi/
   config/         settings (env, prefix VYAPAR_)
   models/         Pydantic contracts + BusinessCategory / SourceName taxonomy;
-                  demand.py (Settlement, PopulationRecord, DemandEvidence)
+                  demand.py (Settlement, PopulationRecord, DemandEvidence);
+                  profile.py (EntrepreneurProfile), opportunity.py (seam)
   categories/     OSM tag <-> internal vocabularies (business + place/activity)
   geocoding/      Nominatim geocoder + disambiguation
   sources/osm/    Overpass QL builder, HTTP client (mirror fallback), parse,
@@ -234,12 +285,14 @@ src/vyaparsarathi/
   normalization/  raw OSM element -> NormalizedBusiness / Settlement; text
   dedup/          conservative, provenance-preserving deduplication
   database/       BusinessRepository + in-memory and SQLAlchemy implementations
-  discovery/      Phase 1 orchestrator; demand_acquisition.py (Phase 2C, impure)
+  discovery/      Phase 1 orchestrator; demand_acquisition.py (Phase 2C, impure);
+                  opportunity_acquisition.py (Phase 3, impure)
   market/         Phase 2A classifier, 2B metrics, 2C demand engine, 2D market
-                  assessment (all pure — no I/O; see tests/test_market_purity.py)
+                  assessment, Phase 3 opportunity/pivot engine (all pure — no
+                  I/O; see tests/test_market_purity.py)
   utils/          haversine, HTTP retry/backoff, file cache, logging, time
 data/demand/      Census 2011 village extract (csv.gz) + SOURCES.md
-scripts/          discover_businesses.py (CLI, Phase 1 + 2A + 2B + 2C + 2D);
+scripts/          discover_businesses.py (CLI, Phase 1 + 2A + 2B + 2C + 2D + 3);
                   build_census_dataset.py (one-off census ETL)
 tests/            unit tests + tests/fixtures/{osm,nominatim,census}
 docs/             design notes

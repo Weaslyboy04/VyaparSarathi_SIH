@@ -13,6 +13,8 @@ Phase 2 competitor filtering handles the overlap.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from vyaparsarathi.models.taxonomy import BusinessCategory as C
 
 OSM_QUERY_SELECTORS: dict[C, list[tuple[str, str]]] = {
@@ -120,3 +122,23 @@ OSM_QUERY_SELECTORS: dict[C, list[tuple[str, str]]] = {
 def selectors_for(category: C) -> list[tuple[str, str]]:
     """Tag selectors for a category. Empty list => not queryable in Phase 1."""
     return OSM_QUERY_SELECTORS.get(category, [])
+
+
+def selectors_for_many(categories: Iterable[C]) -> list[tuple[str, str]]:
+    """The union of :func:`selectors_for` over ``categories``, order-stable and
+    de-duplicated.
+
+    Used by Phase 3 to cover several candidate categories in **one** Overpass
+    union query. Selectors keep first-seen order: category order, then the order
+    within each category's list. ``selectors_for_many([X])`` is exactly
+    ``selectors_for(X)``, so widening the fetch never changes a single-category
+    run. Categories with no mapping contribute nothing (they are simply skipped).
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, str]] = []
+    for category in categories:
+        for selector in OSM_QUERY_SELECTORS.get(category, []):
+            if selector not in seen:
+                seen.add(selector)
+                out.append(selector)
+    return out
