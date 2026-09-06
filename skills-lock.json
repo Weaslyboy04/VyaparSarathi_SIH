@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "session-handoff-prompt": {
+      "source": "dongshuyan/compass-skills",
+      "sourceType": "github",
+      "skillPath": "skills/session-handoff-prompt/SKILL.md",
+      "computedHash": "0c76c12599327643112f4f71db2903a3b667cc324915ba9995f210332f169111"
+    }
+  }
+}

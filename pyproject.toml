@@ -1,0 +1,65 @@
+[project]
+name = "vyaparsarathi"
+version = "0.1.0"
+description = "AI-Driven Hyper-Local Business Advisory and Financial Structuring Assistant for Rural Micro-Entrepreneurs (SIH26091). Phase 1: hyper-local business data acquisition and storage."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "httpx>=0.27",
+    "SQLAlchemy>=2.0",
+    "rapidfuzz>=3.9",
+    "Unidecode>=1.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+# Enable a real PostGIS backend later (Phase 1 works without these):
+postgis = [
+    "psycopg[binary]>=3.1",
+    "GeoAlchemy2>=0.15",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+src = ["src", "tests", "scripts"]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W", "C4"]
+
+[tool.ruff.format]
+# Ruff's default file discovery includes "*.md", and `ruff format` rewrites
+# fenced ```python blocks inside Markdown (e.g. collapsing the aligned
+# end-of-line comments in CLAUDE.md's illustrative snippets). CLAUDE.md and the
+# other docs are hand-maintained prose, not Python modules, so keep the
+# formatter off all Markdown. Python files (*.py) are still formatted, and
+# linting (`ruff check`) is unaffected.
+exclude = ["*.md"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["vyaparsarathi"]
+mypy_path = "src"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+disallow_untyped_defs = false
+plugins = ["pydantic.mypy"]

@@ -1,0 +1,35 @@
+# Environment / secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Caches / local data
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.sqlite3
+*.db
+
+# Raw Census / boundary downloads for the Phase 2C ETL. The normalized output
+# (data/demand/census2011_villages.csv.gz) is committed; the multi-GB source
+# files are not — see data/demand/SOURCES.md to re-fetch them.
+data/demand/raw/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+/.claude/

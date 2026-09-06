@@ -1,0 +1,37 @@
+[
+  {
+    "place_id": 111,
+    "osm_type": "node",
+    "osm_id": 555001,
+    "lat": "25.7500",
+    "lon": "84.5500",
+    "display_name": "Bhagwanpur, Vaishali, Bihar, India",
+    "place_rank": 19,
+    "importance": 0.42,
+    "address": {
+      "village": "Bhagwanpur",
+      "county": "Mahua",
+      "state_district": "Vaishali",
+      "state": "Bihar",
+      "country": "India",
+      "country_code": "in"
+    }
+  },
+  {
+    "place_id": 222,
+    "osm_type": "node",
+    "osm_id": 555002,
+    "lat": "25.2100",
+    "lon": "84.9800",
+    "display_name": "Bhagwanpur, Buxar, Bihar, India",
+    "place_rank": 19,
+    "importance": 0.39,
+    "address": {
+      "village": "Bhagwanpur",
+      "state_district": "Buxar",
+      "state": "Bihar",
+      "country": "India",
+      "country_code": "in"
+    }
+  }
+]

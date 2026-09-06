@@ -1,0 +1,6 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62",
+  "osm3s": { "timestamp_osm_base": "2024-05-01T00:00:00Z", "copyright": "OSM" },
+  "elements": []
+}

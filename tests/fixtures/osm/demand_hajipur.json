@@ -1,0 +1,78 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62",
+  "osm3s": {
+    "timestamp_osm_base": "2024-05-01T00:00:00Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org."
+  },
+  "elements": [
+    {
+      "type": "node",
+      "id": 500001,
+      "lat": 25.6850,
+      "lon": 85.2100,
+      "tags": { "place": "town", "name": "Hajipur", "population": "147688" }
+    },
+    {
+      "type": "node",
+      "id": 500002,
+      "lat": 25.7000,
+      "lon": 85.2300,
+      "tags": { "place": "village", "name": "Jadua" }
+    },
+    {
+      "type": "node",
+      "id": 500003,
+      "lat": 25.7100,
+      "lon": 85.1900,
+      "tags": { "place": "hamlet", "name": "Rampur Nevada" }
+    },
+    {
+      "type": "node",
+      "id": 500004,
+      "lat": 25.9500,
+      "lon": 85.5500,
+      "tags": { "place": "village", "name": "Far Away Gaon" }
+    },
+    {
+      "type": "node",
+      "id": 500005,
+      "lat": 25.6900,
+      "lon": 85.2050,
+      "tags": { "amenity": "school", "name": "Rajkiya Madhya Vidyalaya" }
+    },
+    {
+      "type": "node",
+      "id": 500006,
+      "lat": 25.6880,
+      "lon": 85.2150,
+      "tags": { "amenity": "bank", "name": "State Bank of India" }
+    },
+    {
+      "type": "node",
+      "id": 500007,
+      "lat": 25.6950,
+      "lon": 85.2000,
+      "tags": { "amenity": "marketplace", "name": "Hajipur Bazaar" }
+    },
+    {
+      "type": "node",
+      "id": 500008,
+      "lat": 25.6905,
+      "lon": 85.2090,
+      "tags": { "highway": "bus_stop", "name": "Gandhi Chowk" }
+    },
+    {
+      "type": "node",
+      "id": 500009,
+      "lat": 25.6870,
+      "lon": 85.2110,
+      "tags": { "place": "locality", "name": "Not A Settlement" }
+    },
+    {
+      "type": "node",
+      "id": 500010,
+      "tags": { "place": "village", "name": "Ghost Node No Coords" }
+    }
+  ]
+}

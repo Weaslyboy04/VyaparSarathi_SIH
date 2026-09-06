@@ -1,0 +1,12 @@
+census_code,name,state,district,subdistrict,persons,households,latitude,longitude,coordinate_status,coordinate_source,coordinate_method,dataset,reference_year
+PC11-TEST-0001,Jadua,Testland,Test District,Test Block,5012,980,25.7000,85.2300,matched,datameet_indian_village_boundaries,offline join on (state district subdistrict name); representative point,census_2011_pca_village,2011
+PC11-TEST-0002,Rampur Nevada,Testland,Test District,Test Block,2100,410,25.7100,85.1900,matched,datameet_indian_village_boundaries,offline join on (state district subdistrict name); representative point,census_2011_pca_village,2011
+PC11-TEST-0003,Sonpura,Testland,Test District,Test Block,3000,600,25.7250,85.2400,matched,datameet_indian_village_boundaries,offline join on (state district subdistrict name); representative point,census_2011_pca_village,2011
+PC11-TEST-0001,Jadua duplicate row,Testland,Test District,Test Block,1500,300,25.7005,85.2305,matched,datameet_indian_village_boundaries,offline join on (state district subdistrict name); representative point,census_2011_pca_village,2011
+PC11-TEST-0009,Households Only,Testland,Test District,Test Block,,250,25.7010,85.2310,matched,datameet_indian_village_boundaries,offline join on (state district subdistrict name); representative point,census_2011_pca_village,2011
+PC11-TEST-0010,Ambiguous Name,Testland,Test District,Test Block,900,180,,,ambiguous,,,census_2011_pca_village,2011
+PC11-TEST-0011,No Coords Village,Testland,Test District,Test Block,1400,270,,,unmatched,,,census_2011_pca_village,2011
+PC11-OTHER-0001,Faraway,Otherland,Other District,Other Block,9999,2000,20.0000,80.0000,matched,datameet_indian_village_boundaries,offline join on (state district subdistrict name); representative point,census_2011_pca_village,2011
+PC11-AP-0001,Kangti,ANDHRA PRADESH,Medak,Kangti,2497,490,,,unmatched,,,census_2011_pca_village,2011
+PC11-AP-0002,Borgi,ANDHRA PRADESH,Medak,Kangti,2383,474,,,unmatched,,,census_2011_pca_village,2011
+
