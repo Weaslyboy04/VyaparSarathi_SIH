@@ -46,6 +46,12 @@ def settings(tmp_path: Path) -> Settings:
         max_radius_m=25_000,
         db_url=f"sqlite:///{tmp_path / 'test.sqlite3'}",
         log_level="WARNING",
+        llm_enabled=False,
+        llm_base_url="https://llm.test/v1/complete",
+        llm_model="test-model",
+        llm_timeout_s=5.0,
+        llm_max_retries=2,
+        llm_backoff_base_s=0.0,
     )
 
 

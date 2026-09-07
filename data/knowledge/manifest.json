@@ -1,0 +1,8 @@
+{
+  "version": "v0",
+  "built_at": null,
+  "documents": 0,
+  "chunks": 0,
+  "parameters": 0,
+  "note": "Empty corpus as shipped. See SOURCES.md for the operator ingest step."
+}

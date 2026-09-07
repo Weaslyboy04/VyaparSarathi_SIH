@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from vyaparsarathi.errors import ConfigError
 
 
 class Settings(BaseSettings):
@@ -54,6 +56,15 @@ class Settings(BaseSettings):
     # data/demand/SOURCES.md. A missing file degrades to "no population data".
     census_villages_path: str = "data/demand/census2011_villages.csv.gz"
 
+    # --- Phase 5 knowledge corpus ---
+    # Directory holding documents.jsonl, chunks.jsonl(.gz), parameters.csv and
+    # manifest.json. See data/knowledge/SOURCES.md. A missing directory
+    # degrades to "no evidence available" (KnowledgeAcquisitionReport.
+    # corpus_present=False), never a crash.
+    knowledge_corpus_dir: str = "data/knowledge"
+    # How many RetrievedPassage objects a query may return for display/citation.
+    knowledge_max_passages: int = 8
+
     # --- Deduplication thresholds (CLAUDE.md §9) ---
     dedup_name_similarity_merge: float = 87.0
     dedup_name_similarity_uncertain: float = 75.0
@@ -65,6 +76,36 @@ class Settings(BaseSettings):
 
     # --- Logging ---
     log_level: str = "INFO"
+
+    # --- Phase 6: LLM orchestration (CLAUDE.md §4.1: "an LLM client library
+    # ... chosen in Phases 6-7, not before" — none is; this is a thin httpx
+    # adapter). `llm_enabled=False` is a fully supported mode: the whole
+    # pipeline runs and answers deterministically with no API key. ---
+    llm_enabled: bool = False
+    llm_base_url: str = ""  # empty = disabled; no default endpoint is assumed
+    llm_model: str = ""
+    llm_api_key: SecretStr | None = None
+    llm_timeout_s: float = 30.0
+    llm_max_retries: int = 2
+    llm_backoff_base_s: float = 1.0
+    llm_max_output_tokens: int = 1024
+    llm_temperature: float = 0.2
+    llm_prompt_version: str = "v1"
+
+    @field_validator("llm_base_url")
+    @classmethod
+    def _no_credential_in_url(cls, v: str) -> str:
+        """`utils/http.py` logs the request URL at WARNING and interpolates
+        it into `HttpError`'s message on failure — a credential in the query
+        string would leak into logs and exceptions. The key belongs only in
+        a header, set once by `llm/provider.py::HttpLlmProvider.__init__`."""
+        lowered = v.lower()
+        if any(marker in lowered for marker in ("key=", "token=", "apikey=", "secret=")):
+            raise ConfigError(
+                "VYAPAR_LLM_BASE_URL must not embed a credential in the query string; "
+                "set VYAPAR_LLM_API_KEY instead"
+            )
+        return v
 
     @field_validator("overpass_mirrors", mode="before")
     @classmethod

@@ -28,6 +28,7 @@ from vyaparsarathi.discovery.confidence import coverage_confidence
 from vyaparsarathi.discovery.demand_acquisition import acquire_demand_evidence
 from vyaparsarathi.market.models import Relationship
 from vyaparsarathi.market.relationships import relationship_for
+from vyaparsarathi.models.demand import DemandEvidence
 from vyaparsarathi.models.opportunity import OpportunityEvidence
 from vyaparsarathi.models.results import DiscoveryResult
 from vyaparsarathi.models.taxonomy import BusinessCategory, SourceName
@@ -72,6 +73,7 @@ def acquire_opportunity_evidence(
     census: CensusVillageSource | None = None,
     settings: Settings | None = None,
     clock: Clock = utcnow,
+    demand: DemandEvidence | None = None,
 ) -> OpportunityEvidence:
     """Bundle a union discovery result + demand evidence + per-candidate coverage
     confidence for :func:`vyaparsarathi.market.opportunity.score_opportunities`.
@@ -79,11 +81,23 @@ def acquire_opportunity_evidence(
     ``discovery`` must already be a union fetch (its ``businesses`` covering every
     category in ``candidate_categories``); this function does **not** issue a
     business query. It issues exactly one demand query (via
-    :func:`acquire_demand_evidence`).
+    :func:`acquire_demand_evidence`) unless ``demand`` is supplied, in which
+    case that already-acquired evidence is reused verbatim and no second
+    Overpass union query is made. `acquire_demand_evidence` is
+    category-independent (fixed `DEMAND_QUERY_SELECTORS`), so a caller that
+    already ran it for the same catchment (e.g. Phase 6's `DEMAND_EVIDENCE`
+    step) should always pass it here rather than let this function repeat an
+    identical query — the default (`None`) reproduces the original
+    single-query-inside-this-function behaviour unchanged, for every existing
+    caller.
     """
     candidates = _dedupe_order_stable(candidate_categories)
-    demand = acquire_demand_evidence(
-        discovery, client=client, census=census, settings=settings, clock=clock
+    demand = (
+        demand
+        if demand is not None
+        else acquire_demand_evidence(
+            discovery, client=client, census=census, settings=settings, clock=clock
+        )
     )
 
     raw_records, unmapped, mirror = _osm_coverage_stats(discovery)

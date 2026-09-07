@@ -26,6 +26,12 @@ venv/
 # files are not — see data/demand/SOURCES.md to re-fetch them.
 data/demand/raw/
 
+# Operator-downloaded source documents for the Phase 5 knowledge corpus. The
+# built/chunked/reviewed output (documents.jsonl, chunks.jsonl.gz,
+# parameters.csv, manifest.json) is committed; the raw documents themselves
+# are not — see data/knowledge/SOURCES.md.
+data/knowledge/raw/
+
 # Editor / OS
 .vscode/
 .idea/

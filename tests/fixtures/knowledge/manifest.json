@@ -1,0 +1,8 @@
+{
+  "version": "test-fixture-1",
+  "built_at": "2026-01-15T09:00:00+00:00",
+  "documents": 10,
+  "chunks": 12,
+  "parameters": 15,
+  "note": "Synthetic test fixture. No document, rate, or citation here is real."
+}

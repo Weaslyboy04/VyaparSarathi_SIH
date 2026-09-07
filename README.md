@@ -121,7 +121,9 @@ label lattice, `evidence_sufficient`, `capability_incomplete` and a
 **capital-fit screen** — never on the number alone. The capital screen
 (`CapitalFit`: unknown / affordable / stretch / out_of_reach) is an indicative
 ordinal check, clearly captioned as *not* a financial assessment and *not* a
-claim of impossibility — Phase 4 replaces it.
+claim of impossibility. Replacing it with Phase 4's real project-cost-based
+screen is deferred (see [`docs/phase-4.md`](docs/phase-4.md), "Phase 4 →
+Phase 5") to avoid re-opening approved Phase 3 behaviour.
 
 `score_opportunities()` is pure (`tests/test_market_purity.py`). It computes **no**
 finance — project cost, EMI, DSCR, cash flow, loan structure, moratorium and
@@ -134,8 +136,122 @@ zero-competitor candidate into `underserved`. See
 `asset_relevance`, `capital_bands`, caveats) live in
 `market/opportunity_config.py`.
 
-Nothing beyond Phase 3 is implemented (no deterministic financial engine, RAG,
-scheme routing, LLM orchestration, WhatsApp, DPR, Google Places, SensiBook).
+## Phase 4 — Deterministic Financial Engine
+
+**Input:** a `FinancialPlanInput` — project cost lines, working-capital
+assumptions, a revenue driver, operating costs, and a financing structure
+(promoter cash, other funds, an optional loan). Every figure is a typed
+`FinancialInput` tagged `user_provided` / `sourced` / `assumed` /
+`calculated`, with a rationale required for `assumed` values. There is no
+default anywhere for revenue, price, margin, a cost line, a rate, a tenure,
+or a moratorium treatment — omitting one yields
+`INSUFFICIENT_FINANCIAL_EVIDENCE` naming it, never a fabricated number.
+**Output:** a `FinancialAssessmentResult` — project cost, working capital, a
+revenue schedule, break-even, a full EMI/amortisation/moratorium schedule,
+monthly cash flow, DSCR (cash-basis, no depreciation or tax), seven stress
+scenarios, and a `FinancialFeasibilityStatus` (`feasible` /
+`feasible_with_stretch` / `financing_gap` / `cash_flow_stress` /
+`unserviceable` / `insufficient_financial_evidence`) with the exact rung and
+finding that decided it.
+
+`assess_financials()` is pure (`tests/test_finance_purity.py`); money is
+`Decimal`, quantised to paise, never `float`. It computes **no** market or
+opportunity information — no OSM data, no market label, no Phase 3 score —
+and Phase 3 is unmodified: `finance/fit.py::to_financial_fit()` populates the
+already-declared `FinancialFitInput` seam
+(`score_opportunities(..., financial_fit=...)`), and a business can be
+`underserved` at a high Phase 3 score and `UNSERVICEABLE` here — the two
+measurements are independent and neither implies the other. See
+[`docs/phase-4.md`](docs/phase-4.md); tunables (contingency %, DSCR
+thresholds, stress-test deltas, fixed caveats) live in
+`finance/finance_config.py`.
+
+## Phase 5 — Knowledge / Evidence Layer
+
+**Input:** a `ParameterQuery` naming the parameters wanted (interest rate,
+tenure, moratorium, a statutory fee, a sector benchmark, ...) plus category /
+state / district / scheme / loan amount / an explicit `as_of` date (never
+`date.today()`). **Output:** a `FinanceKnowledgeEvidence` — one
+`ParameterResolution` per requested name (`resolved` / `no_evidence` /
+`conflicting` / `stale_only` / `conditions_unresolved`, each with a
+confidence and full citation), plus any retrieved passages for display.
+
+Every committed `SourcedParameter` row must survive three checks before it
+can reach a plan: its `value_token` must occur in its own `evidence_quote`,
+`normalize_value(value_token, normalization)` must equal `value`, and (at
+load time) `evidence_quote` must occur verbatim in the chunk it cites — a row
+failing any of the three is dropped and counted, never kept "just in case".
+The resolver (`knowledge/resolver.py`) never consults a retriever: a value is
+chosen purely by a fixed precedence ladder (source tier, then applicability
+specificity, then recency) over the registry, so a retrieval ranking can
+degrade what's shown *beside* a number, never the number itself.
+
+`knowledge/plan_binding.py::bind_sourced_inputs()` /
+`build_loan_terms()` are the **only** functions that construct a
+`FinancialInput` or import Phase 4's plan models
+(`tests/test_knowledge_purity.py`) — the seam `docs/phase-4.md` declared:
+resolved rate/tenure/moratorium bind into `LoanTerms`, a statutory fee
+becomes a new `CostLine`, a benchmark binds into `OperatingCostInput` /
+`WorkingCapitalInput` when the field isn't already set — and four parameters
+(`promoter_margin_pct`, `subsidy_pct`, `loan_ceiling_inr`,
+`security_deposit_months`) bind **nowhere**, on purpose: converting them
+would need Phase 4 arithmetic this phase must never perform. A field that
+already carries any value (`user_provided`/`assumed`/an earlier `sourced`
+one) is never overwritten. With an empty corpus, binding changes nothing —
+`assess_financials(bind_sourced_inputs(plan, evidence).plan)` equals
+`assess_financials(plan)` byte-for-byte
+(`tests/test_knowledge_to_finance.py`).
+
+The corpus ships **empty** — `data/knowledge/` holds zero real documents; the
+machinery is exercised end to end against a synthetic, visibly-fictional
+fixture corpus (`tests/fixtures/knowledge/`, see its README) and the shipped
+demo (`scripts/phase5_demo.py`). Ingesting real government documents is a
+separate, ongoing operator task (`data/knowledge/SOURCES.md`,
+`scripts/build_knowledge_corpus.py` + `scripts/build_parameter_registry.py`),
+not a code change. See [`docs/phase-5.md`](docs/phase-5.md), including its
+unsupported-parameter register; tunables (tier weights, freshness decay,
+applicability penalties) live in `knowledge/knowledge_config.py`.
+
+## Phase 6 — Application Backend + LLM Orchestration
+
+**Input:** a channel-neutral `MessageRequest` (`app/dto.py`) — structured slot
+updates today, free text tomorrow when an LLM provider is configured.
+**Output:** an `AdvisoryReply` — plain-text lines, numbered choices, and a
+`Narrative` that records, per section, whether it was rendered deterministically
+or by an LLM.
+
+`app/service.py::AdvisoryService` is the one entry point a channel calls; it owns
+session lifecycle and persistence (`database/session_repository.py`, in-memory or
+SQLite) and drives one turn of `llm/orchestrator.py::run_turn` per message. That
+function applies the turn's deltas, invalidates any step whose declared inputs
+changed (`conversation/artifacts.py`, SHA-256 over inputs, never outputs), and
+runs the 15-node step DAG (`conversation/workflow.py`) as far as it structurally
+can — `llm/tools.py::STEP_RUNNERS` is the **only** place in the repository that
+calls a Phase 1-5 engine, using every real signature verbatim.
+
+The LLM is confined to two checked jobs: it may point at a substring of the
+user's own message as a number (`SourcedParameter.value_token`, reused from
+Phase 5) and it may supply a raw business phrase (never a category —
+`market/proposed.py::resolve_proposed_business` owns that mapping). Neither the
+recommendation, a market metric, nor a financial figure is ever produced by the
+model. `llm_enabled=False` is a fully supported mode: with no LLM provider
+configured at all, `AdvisoryService` still runs the whole pipeline to a
+recommendation from structured input (`tests/test_app_service.py` never
+constructs an `LlmProvider`).
+
+`conversation/recommendation.py::combine()` is a fully enumerated 5×6 = 30-cell
+table over Phase 3's `Stance` and Phase 4's `FinancialFeasibilityStatus`
+(`tests/test_recommendation_combiner.py` asserts every cell). See
+[`docs/phase-6.md`](docs/phase-6.md) for the DAG's dependency subtleties (why
+`DEMAND_EVIDENCE` survives a category change, why `FINANCIAL_FIT ↔ OPPORTUNITY`
+is not a cycle), the grounding check's guarantees and stated limits, and what is
+deliberately deferred (LLM-authored narrative is implemented and tested standalone
+but not yet wired into `send_message`; every reply today is the deterministic
+renderer). Run the scripted, offline, two-transcript demo:
+`python scripts/phase6_demo.py`.
+
+Nothing beyond Phase 6 is implemented (no WhatsApp transport, no DPR rendering,
+no Google Places, no SensiBook).
 
 ## Setup
 
@@ -244,12 +360,24 @@ With `--opportunity --json` the CLI emits the `OpportunityAnalysisResult` (JSON
 precedence: opportunity → assessment → demand → metrics → analysis → discovery).
 Phase 3 outcomes are all valid analyses, so `ok` and `no_evidence` both exit `0`.
 
+Phase 4 has no flag on this CLI — a real-location run has no financial
+inputs, and inventing them to fill the gap is exactly what Phase 4 forbids.
+Its own demo script runs six fixture-based scenarios end to end instead:
+
+```bash
+python scripts/phase4_demo.py          # all six
+python scripts/phase4_demo.py 3        # one (short tenure + high rate -> unserviceable)
+```
+
+Every figure in every demo is an `assumed` `FinancialInput` whose rationale
+says so explicitly — none is a market survey, a quotation, or a benchmark.
+
 ## Tests, lint, types
 
 ```bash
-pytest            # 369 unit tests, fully offline (all HTTP mocked with respx)
-ruff check .
-ruff format --check .
+pytest            # unit tests, fully offline (all HTTP mocked with respx)
+ruff check src tests scripts
+ruff format --check src tests scripts
 mypy              # checks src/vyaparsarathi
 ```
 
@@ -276,24 +404,56 @@ src/vyaparsarathi/
   config/         settings (env, prefix VYAPAR_)
   models/         Pydantic contracts + BusinessCategory / SourceName taxonomy;
                   demand.py (Settlement, PopulationRecord, DemandEvidence);
-                  profile.py (EntrepreneurProfile), opportunity.py (seam)
+                  profile.py (EntrepreneurProfile), opportunity.py (seam);
+                  finance.py (FinancialInput/InputKind, FinancialPlanInput);
+                  knowledge.py (DocumentRecord/DocumentChunk), parameters.py
+                  (SourcedParameter, ParameterQuery, FinanceKnowledgeEvidence)
   categories/     OSM tag <-> internal vocabularies (business + place/activity)
   geocoding/      Nominatim geocoder + disambiguation
   sources/osm/    Overpass QL builder, HTTP client (mirror fallback), parse,
                   business adapter + demand (places.py) fetch
   sources/census/ Census 2011 village extract loader (offline reference data)
+  sources/knowledge/ FileCorpusStore — reads the committed knowledge corpus
   normalization/  raw OSM element -> NormalizedBusiness / Settlement; text
   dedup/          conservative, provenance-preserving deduplication
-  database/       BusinessRepository + in-memory and SQLAlchemy implementations
+  database/       BusinessRepository + in-memory and SQLAlchemy implementations;
+                  session_repository.py (Phase 6 conversation persistence:
+                  in-memory + SQLite)
   discovery/      Phase 1 orchestrator; demand_acquisition.py (Phase 2C, impure);
-                  opportunity_acquisition.py (Phase 3, impure)
+                  opportunity_acquisition.py (Phase 3, impure);
+                  knowledge_acquisition.py (Phase 5, impure)
   market/         Phase 2A classifier, 2B metrics, 2C demand engine, 2D market
                   assessment, Phase 3 opportunity/pivot engine (all pure — no
                   I/O; see tests/test_market_purity.py)
+  finance/        Phase 4 financial engine — costs, operations, debt, cashflow,
+                  dscr, pipeline, stress, assessment (all pure except fit.py,
+                  the only module importing market/; see
+                  tests/test_finance_purity.py)
+  knowledge/      Phase 5 evidence layer — parameter_spec, resolver,
+                  confidence, tokenize/lexical/retrieval (all pure except
+                  plan_binding.py, the only module importing models/finance's
+                  plan models; see tests/test_knowledge_purity.py)
+  conversation/   Phase 6 — PURE: slots/provenance, the 15-node step DAG,
+                  cascade invalidation, the recommendation combiner, the
+                  evidence bundle, deterministic rendering, grounding (see
+                  tests/test_conversation_purity.py)
+  llm/            Phase 6 — the only package allowed to execute a StepId
+                  (tools.py); provider edge, prompts, structured-output
+                  parsing, turn orchestration (see tests/test_llm_leaf.py)
+  app/            Phase 6 — channel-neutral backend: AdvisoryService, DTOs,
+                  runtime wiring (no HTTP server; Phase 7 adds transport)
   utils/          haversine, HTTP retry/backoff, file cache, logging, time
 data/demand/      Census 2011 village extract (csv.gz) + SOURCES.md
+data/knowledge/   knowledge corpus (documents/chunks/parameters, ships empty)
+                  + SOURCES.md
 scripts/          discover_businesses.py (CLI, Phase 1 + 2A + 2B + 2C + 2D + 3);
-                  build_census_dataset.py (one-off census ETL)
-tests/            unit tests + tests/fixtures/{osm,nominatim,census}
+                  build_census_dataset.py (one-off census ETL);
+                  phase4_demo.py (six fixture-based financial scenarios);
+                  build_knowledge_corpus.py / build_parameter_registry.py
+                  (Phase 5 ETL: chunk, propose, verify);
+                  phase5_demo.py (fixture-corpus evidence -> Phase 4 demo);
+                  phase6_demo.py (two offline transcripts through
+                  AdvisoryService: empty corpus, then the fixture corpus)
+tests/            unit tests + tests/fixtures/{osm,nominatim,census,knowledge}
 docs/             design notes
 ```
