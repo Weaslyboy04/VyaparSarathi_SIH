@@ -36,7 +36,7 @@ class StepSpec(BaseModel):
     `LOCATION_TEXT`) — deliberately **not** used for financial drivers, which
     the finance engine itself reports missing via
     `FinancialAssessmentResult.missing_core_drivers`
-    (`finance/assessment.py::_missing_core_drivers`) rather than being gated
+    (`finance/assessment.py::missing_core_drivers`) rather than being gated
     here; that keeps the DAG a data-dependency graph, not a duplicate of the
     engine's own validation. ``config_kwarg`` records which of the two
     inconsistent keyword names (`config=` vs `cfg=`) the real engine
@@ -130,9 +130,23 @@ STEP_SPECS: dict[StepId, StepSpec] = {
         impure=False,
         config_kwarg="cfg",
     ),
+    StepId.STRUCTURE_FINANCE: StepSpec(
+        step=StepId.STRUCTURE_FINANCE,
+        required_steps=(StepId.BIND_PLAN,),
+        impure=False,
+        # `finance/structuring.py::structure_financing` takes two distinct
+        # configs (`scheme_cfg=`, `fin_cfg=`) — neither literally named
+        # `config`/`cfg` — so this StepSpec carries neither of the two
+        # inconsistent keyword names; see `config_kwarg`'s own docstring.
+        config_kwarg=None,
+    ),
     StepId.ASSESS_FINANCE: StepSpec(
         step=StepId.ASSESS_FINANCE,
-        required_steps=(StepId.BIND_PLAN,),
+        # Both kept: STRUCTURE_FINANCE already requires BIND_PLAN, so this
+        # adds nothing to readiness, but it keeps the dependency on the
+        # bound plan explicit in the fingerprint rather than implicit
+        # through one extra hop (see conversation/artifacts.py).
+        required_steps=(StepId.BIND_PLAN, StepId.STRUCTURE_FINANCE),
         impure=False,
         config_kwarg="cfg",
     ),
@@ -144,6 +158,18 @@ STEP_SPECS: dict[StepId, StepSpec] = {
     StepId.RECOMMEND: StepSpec(
         step=StepId.RECOMMEND,
         required_steps=(StepId.OPPORTUNITY, StepId.ASSESS_FINANCE),
+        optional_steps=(StepId.ASSESS_MARKET,),
+        impure=False,
+        config_kwarg="cfg",
+    ),
+    StepId.SWOT: StepSpec(
+        step=StepId.SWOT,
+        # Mirrors RECOMMEND's own dependency shape (required: OPPORTUNITY,
+        # ASSESS_FINANCE) plus STRUCTURE_FINANCE — never computed from a
+        # partial finance picture within a turn. STRUCTURE_FINANCE always
+        # completes (NOT_CONFIGURED/INSUFFICIENT_EVIDENCE are results, not
+        # failures), so requiring it never blocks SWOT from becoming ready.
+        required_steps=(StepId.OPPORTUNITY, StepId.ASSESS_FINANCE, StepId.STRUCTURE_FINANCE),
         optional_steps=(StepId.ASSESS_MARKET,),
         impure=False,
         config_kwarg="cfg",

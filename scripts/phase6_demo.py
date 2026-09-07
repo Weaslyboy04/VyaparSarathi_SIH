@@ -20,6 +20,14 @@ Two transcripts, matching `phase5_demo.py`'s honesty posture:
   describes a real Indian credit scheme). A rate resolves, a loan is built,
   and DSCR appears — printed under an explicit "SYNTHETIC FIXTURE DATA"
   banner, exactly as `phase5_demo.py` prints its own numbers.
+* **C** (Tier 1) — the empty knowledge corpus again, but with a demo-only
+  declared SIH financing structure set for the duration of this one
+  transcript (`config/sih_scheme.py::DEFAULT_SIH_SCHEME_CONFIG` is `None` —
+  unconfigured — everywhere else in this repository). Shows
+  `STRUCTURE_FINANCE` deriving a real margin/loan split and Phase 4 pricing a
+  real EMI/DSCR from it, printed under an explicit "ILLUSTRATIVE DEMO
+  CONFIGURATION" banner — this split is this demo script's own invented
+  number, not a retrieved or real scheme figure (CLAUDE.md §30).
 
 Run:  ``./.venv/Scripts/python.exe scripts/phase6_demo.py``
 """
@@ -27,8 +35,10 @@ Run:  ``./.venv/Scripts/python.exe scripts/phase6_demo.py``
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
+import vyaparsarathi.llm.tools as tools_module
 from vyaparsarathi.app.dto import (
     AdvisoryReply,
     ChannelId,
@@ -38,6 +48,7 @@ from vyaparsarathi.app.dto import (
 from vyaparsarathi.app.runtime import AdvisoryRuntime
 from vyaparsarathi.app.service import AdvisoryService
 from vyaparsarathi.config import Settings
+from vyaparsarathi.config.sih_scheme import SihSchemeConfig
 from vyaparsarathi.conversation.session_models import SlotName, StepId
 from vyaparsarathi.conversation.understanding import SlotUpdateInput
 from vyaparsarathi.database.memory import InMemoryBusinessRepository
@@ -53,6 +64,23 @@ from vyaparsarathi.sources.osm.adapter import OverpassFetch
 from vyaparsarathi.sources.osm.models import RawOsmElement
 
 _FIXTURES_KNOWLEDGE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "knowledge"
+
+# Demo-only — set for the duration of `run_transcript_with_demo_scheme` only,
+# then restored. NOT the shipped default (`config/sih_scheme.py`'s own
+# `DEFAULT_SIH_SCHEME_CONFIG` stays `None`); this split is this script's own
+# illustrative invention, never a real SIH26091 figure. [decision]
+_DEMO_SCHEME_CONFIG = SihSchemeConfig(
+    scheme_name="Illustrative demo structure (NOT a real SIH26091 figure)",
+    promoter_contribution_pct=Decimal("0.10"),
+    loan_pct=Decimal("0.90"),
+    interest_rate_pct=Decimal("11"),
+    tenure_months=60,
+    moratorium_months=6,
+    rationale=(
+        "scripts/phase6_demo.py's own illustrative demo value, set only for Transcript "
+        "C — not sourced from the SIH26091 problem statement, not a retrieved scheme rule."
+    ),
+)
 
 
 # --- offline fakes (same style as tests/test_app_service.py) ---------------
@@ -221,6 +249,22 @@ def run_transcript(knowledge_corpus_dir: Path) -> tuple[list[AdvisoryReply], obj
     return [turn1, turn2], session
 
 
+def run_transcript_with_demo_scheme(
+    knowledge_corpus_dir: Path,
+) -> tuple[list[AdvisoryReply], object]:
+    """Transcript C: identical Bhagwanpur scenario, but with
+    `_DEMO_SCHEME_CONFIG` set on `llm.tools` for the duration of this one
+    call, then restored — the shipped default
+    (`config/sih_scheme.py::DEFAULT_SIH_SCHEME_CONFIG`) is `None` everywhere
+    else in this repository."""
+    previous = tools_module.DEFAULT_SIH_SCHEME_CONFIG
+    tools_module.DEFAULT_SIH_SCHEME_CONFIG = _DEMO_SCHEME_CONFIG
+    try:
+        return run_transcript(knowledge_corpus_dir)
+    finally:
+        tools_module.DEFAULT_SIH_SCHEME_CONFIG = previous
+
+
 def check_common() -> list[str]:
     """Invariants both transcripts must satisfy — an empty list means every
     check passed. Mirrors `phase5_demo.py::check_common`'s shape."""
@@ -235,10 +279,29 @@ def check_common() -> list[str]:
         resolutions = knowledge_a.payload.get("resolutions", [])
         if any(r.get("status") == "resolved" for r in resolutions):
             problems.append("transcript A (empty corpus) must resolve zero parameters")
+    structure_a = session_a.artifacts.get(StepId.STRUCTURE_FINANCE)
+    if structure_a is not None and structure_a.payload.get("status") == "structured":
+        problems.append("transcript A (unconfigured scheme) must never structure a financing split")
+    if "illustrative demo structure" in all_text_a:
+        problems.append("transcript A must never leak Transcript C's demo scheme name")
 
     replies_b, session_b = run_transcript(_FIXTURES_KNOWLEDGE)
     if not replies_b:
         problems.append("transcript B produced no replies")
+
+    replies_c, session_c = run_transcript_with_demo_scheme(_empty_corpus_dir())
+    if not replies_c:
+        problems.append("transcript C produced no replies")
+    structure_c = session_c.artifacts.get(StepId.STRUCTURE_FINANCE)
+    if structure_c is None or structure_c.payload.get("status") != "structured":
+        problems.append("transcript C (demo scheme configured) must structure a financing split")
+    # After Transcript C's demo-scheme monkeypatch is restored, a fresh
+    # (unrelated) run must go straight back to unconfigured — the module
+    # global must never leak across calls.
+    _replies_after, session_after = run_transcript(_empty_corpus_dir())
+    structure_after = session_after.artifacts.get(StepId.STRUCTURE_FINANCE)
+    if structure_after is not None and structure_after.payload.get("status") == "structured":
+        problems.append("the demo scheme leaked past run_transcript_with_demo_scheme's cleanup")
 
     return problems
 
@@ -272,6 +335,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     replies_b, _session_b = run_transcript(_FIXTURES_KNOWLEDGE)
     _print_transcript("Transcript B — synthetic fixture knowledge corpus", replies_b)
+
+    print(
+        "\n*** ILLUSTRATIVE DEMO CONFIGURATION BELOW — this margin/loan split and rate "
+        "are this script's own invented demo values (see _DEMO_SCHEME_CONFIG above), set "
+        "only for this transcript; the shipped default (config/sih_scheme.py) is "
+        "unconfigured. Not a real SIH26091 figure. ***"
+    )
+    replies_c, _session_c = run_transcript_with_demo_scheme(_empty_corpus_dir())
+    _print_transcript(
+        "Transcript C — Tier 1 SIH financing structure (illustrative demo config)", replies_c
+    )
 
     problems = check_common()
     if problems:

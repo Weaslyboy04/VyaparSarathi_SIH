@@ -41,7 +41,7 @@ _DEGRADED_EXC = (
 )
 
 # A turn never runs more steps than this — a structural safety bound, not a
-# tuning knob a real conversation would ever approach (the DAG has 15 nodes).
+# tuning knob a real conversation would ever approach (the DAG has 17 nodes).
 _MAX_STEPS_PER_TURN = len(StepId) + 2
 
 

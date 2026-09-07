@@ -32,12 +32,18 @@ from vyaparsarathi.models.finance import (
 )
 
 
-def _missing_core_drivers(plan: FinancialPlanInput) -> list[str]:
+def missing_core_drivers(plan: FinancialPlanInput) -> list[str]:
     """The core drivers named in CLAUDE.md §15: a revenue driver, a margin
     driver, at least one project-cost line, and fixed operating expenses.
     (A requested loan's own rate/tenure/moratorium fields cannot be partially
     missing — `LoanTerms` requires all of them at construction — so there is
-    nothing further to check there.)"""
+    nothing further to check there.)
+
+    Public (not `_`-prefixed): `finance/structuring.py` reuses this exact
+    gate before deriving a project cost, so a plan lacking a core driver is
+    reported the same way — `INSUFFICIENT_EVIDENCE`/
+    `INSUFFICIENT_FINANCIAL_EVIDENCE` — whether structuring or assessment
+    asks first, never a duplicated or drifting check."""
     missing: list[str] = []
     revenue = plan.revenue
     has_revenue = revenue.monthly_revenue is not None or (
@@ -97,7 +103,7 @@ def assess_financials(
     plan: FinancialPlanInput, *, cfg: FinanceConfig = DEFAULT_FINANCE_CONFIG
 ) -> FinancialAssessmentResult:
     assumptions = _collect_assumptions(plan)
-    missing = _missing_core_drivers(plan)
+    missing = missing_core_drivers(plan)
     over_assumed = assumptions.assumption_share > cfg.max_assumption_share
 
     if missing or over_assumed:
@@ -171,3 +177,6 @@ def assess_financials(
         config=cfg,
         warnings=list(core.financing_notes),
     )
+
+
+__all__ = ["assess_financials", "missing_core_drivers"]

@@ -229,7 +229,7 @@ class ExperienceSetSlot(BaseModel):
 
 
 class StepId(StrEnum):
-    """The 15-node step DAG (`conversation/workflow.py` declares the edges;
+    """The 17-node step DAG (`conversation/workflow.py` declares the edges;
     this is just the closed set of names). `*` = impure (owns a `StepRunner`
     in `llm/tools.py` that touches network/disk); the rest are pure engine
     calls over already-acquired evidence."""
@@ -246,9 +246,11 @@ class StepId(StrEnum):
     FINANCE_KNOWLEDGE = "finance_knowledge"  # *
     BUILD_PLAN = "build_plan"
     BIND_PLAN = "bind_plan"
+    STRUCTURE_FINANCE = "structure_finance"
     ASSESS_FINANCE = "assess_finance"
     FINANCIAL_FIT = "financial_fit"
     RECOMMEND = "recommend"
+    SWOT = "swot"
 
 
 class StepArtifact(BaseModel):

@@ -99,6 +99,20 @@ def _render_summary(bundle: EvidenceBundle, *, partial: bool) -> tuple[list[str]
     if breaking is not None:
         add("breaking_point", f"Named breaking point: {breaking.render}")
 
+    scheme_name = bundle.get("structure.scheme_name")
+    if scheme_name is not None:
+        text = f"Financing structure ({scheme_name.render})."
+        margin = bundle.get("structure.required_promoter_margin_inr")
+        if margin is not None:
+            text += f" Required promoter margin: {margin.render}."
+        loan = bundle.get("structure.indicated_loan_inr")
+        if loan is not None:
+            text += f" Indicated loan: {loan.render}."
+        shortfall = bundle.get("structure.margin_shortfall_inr")
+        if shortfall is not None:
+            text += f" Shortfall against stated liquid cash: {shortfall.render}."
+        add("scheme_structure", text)
+
     missing = [f for f in bundle.facts if f.key.startswith("finance.missing_core_driver.")]
     if missing:
         text_lines = ["To give a real financial verdict, I still need:"]
@@ -112,6 +126,12 @@ def _render_summary(bundle: EvidenceBundle, *, partial: bool) -> tuple[list[str]
         if reason is not None:
             text += f" {reason.render}"
         add("recommendation", text)
+
+    swot_facts = [f for f in bundle.facts if f.key.startswith("swot.")]
+    if swot_facts:
+        swot_lines = ["SWOT:"]
+        swot_lines.extend(f"- [{f.label}] {f.render}" for f in swot_facts)
+        add("swot", "\n".join(swot_lines))
 
     if not lines:
         add("fallback", "I don't have enough evidence yet to say anything about this business.")

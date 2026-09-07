@@ -17,7 +17,9 @@ from pydantic import BaseModel
 
 from vyaparsarathi.conversation.recommendation_models import RecommendationResult
 from vyaparsarathi.conversation.session_models import StepId
+from vyaparsarathi.conversation.swot_models import SwotResult
 from vyaparsarathi.finance.assessment_models import FinancialAssessmentResult
+from vyaparsarathi.finance.structuring_models import SchemeStructureResult
 from vyaparsarathi.market.assessment_models import MarketAssessmentResult
 from vyaparsarathi.market.demand_models import DemandSignalsResult
 from vyaparsarathi.market.metrics_models import CompetitionMetricsResult
@@ -42,9 +44,11 @@ STEP_RESULT_MODEL: dict[StepId, type[BaseModel]] = {
     StepId.FINANCE_KNOWLEDGE: FinanceKnowledgeEvidence,
     StepId.BUILD_PLAN: FinancialPlanInput,
     StepId.BIND_PLAN: FinancialPlanInput,
+    StepId.STRUCTURE_FINANCE: SchemeStructureResult,
     StepId.ASSESS_FINANCE: FinancialAssessmentResult,
     StepId.FINANCIAL_FIT: FinancialFitInput,
     StepId.RECOMMEND: RecommendationResult,
+    StepId.SWOT: SwotResult,
 }
 
 __all__ = ["STEP_RESULT_MODEL"]

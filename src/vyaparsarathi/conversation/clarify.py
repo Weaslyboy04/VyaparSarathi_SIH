@@ -3,7 +3,7 @@
 Two kinds of gap drive a question: a hard structural blocker (no location, no
 proposed business — `SLOT_QUESTIONS`) that the planner asks about before any
 engine runs at all, and a financial driver
-`finance/assessment.py::_missing_core_drivers` names after `ASSESS_FINANCE`
+`finance/assessment.py::missing_core_drivers` names after `ASSESS_FINANCE`
 has already run and returned `INSUFFICIENT_FINANCIAL_EVIDENCE` — these are
 folded into the delivered narrative rather than blocking a turn (CLAUDE.md
 §25's "DELIVER_PARTIAL matters: the user sees the market half while finance

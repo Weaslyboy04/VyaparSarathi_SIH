@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 
 from vyaparsarathi.conversation.severity import Severity
 from vyaparsarathi.finance.assessment_models import FinancialFeasibilityStatus
+from vyaparsarathi.finance.structuring_models import SchemeStructureStatus
 from vyaparsarathi.market.assessment_models import MarketAssessmentStatus
 from vyaparsarathi.market.demand_models import DemandStatus
 from vyaparsarathi.market.metrics_models import CompetitionMetricsStatus
@@ -172,6 +173,21 @@ FINANCE_OUTCOMES: dict[FinancialFeasibilityStatus, OutcomeSpec] = {
     ),
 }
 
+STRUCTURE_OUTCOMES: dict[SchemeStructureStatus, OutcomeSpec] = {
+    SchemeStructureStatus.STRUCTURED: OutcomeSpec(
+        severity=Severity.INFO,
+        message="A financing structure was derived from the declared scheme split.",
+    ),
+    SchemeStructureStatus.NOT_CONFIGURED: OutcomeSpec(
+        severity=Severity.DEGRADED,
+        message="No financing structure is declared for this deployment yet.",
+    ),
+    SchemeStructureStatus.INSUFFICIENT_EVIDENCE: OutcomeSpec(
+        severity=Severity.BLOCKED,
+        message="Project cost could not be derived yet, so no financing structure was built.",
+    ),
+}
+
 RESOLUTION_OUTCOMES: dict[ResolutionStatus, OutcomeSpec] = {
     ResolutionStatus.RESOLVED: OutcomeSpec(
         severity=Severity.INFO, message="An official figure was found for this parameter."
@@ -232,6 +248,7 @@ OUTCOME_TABLES: dict[type, dict] = {
     MarketAssessmentStatus: MARKET_ASSESSMENT_OUTCOMES,
     OpportunityStatus: OPPORTUNITY_OUTCOMES,
     FinancialFeasibilityStatus: FINANCE_OUTCOMES,
+    SchemeStructureStatus: STRUCTURE_OUTCOMES,
     ResolutionStatus: RESOLUTION_OUTCOMES,
     CapitalFit: CAPITAL_FIT_OUTCOMES,
 }

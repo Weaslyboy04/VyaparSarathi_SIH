@@ -24,9 +24,11 @@ _ENGINE_CALLABLES: dict[StepId, tuple[str, str]] = {
     StepId.ASSESS_MARKET: ("vyaparsarathi.market.assessment", "assess_market"),
     StepId.OPPORTUNITY: ("vyaparsarathi.market.opportunity", "score_opportunities"),
     StepId.BIND_PLAN: ("vyaparsarathi.knowledge.plan_binding", "bind_sourced_inputs"),
+    StepId.STRUCTURE_FINANCE: ("vyaparsarathi.finance.structuring", "structure_financing"),
     StepId.ASSESS_FINANCE: ("vyaparsarathi.finance.assessment", "assess_financials"),
     StepId.FINANCIAL_FIT: ("vyaparsarathi.finance.fit", "to_financial_fit"),
     StepId.RECOMMEND: ("vyaparsarathi.conversation.recommendation", "combine"),
+    StepId.SWOT: ("vyaparsarathi.conversation.swot", "build_swot"),
 }
 
 

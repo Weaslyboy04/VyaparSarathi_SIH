@@ -44,6 +44,14 @@ STEP_INPUT_SLOTS: dict[StepId, tuple[SlotName, ...]] = {
     StepId.DEMAND_EVIDENCE: (SlotName.LOCATION_TEXT, SlotName.RADIUS_M),
     StepId.OPPORTUNITY: (SlotName.LIQUID_CASH_INR,),
     StepId.FINANCE_KNOWLEDGE: (SlotName.LOAN_PRINCIPAL_INR,),
+    # The margin check compares the required-margin figure against BOTH of
+    # these directly (finance/structuring.py), so a correction to either one
+    # must re-run structuring even though its other inputs all arrive via
+    # BIND_PLAN's own fingerprint.
+    StepId.STRUCTURE_FINANCE: (
+        SlotName.LIQUID_CASH_INR,
+        SlotName.PROMOTER_CASH_CONTRIBUTION_INR,
+    ),
     StepId.BUILD_PLAN: (
         SlotName.LIQUID_CASH_INR,
         SlotName.PROMOTER_CASH_CONTRIBUTION_INR,

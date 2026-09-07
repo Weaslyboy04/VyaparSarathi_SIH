@@ -22,7 +22,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from vyaparsarathi.conversation.recommendation_models import RecommendationResult
 from vyaparsarathi.conversation.session_models import ConversationSession, StepId
+from vyaparsarathi.conversation.swot_models import SwotResult
 from vyaparsarathi.finance.assessment_models import FinancialAssessmentResult
+from vyaparsarathi.finance.structuring_models import SchemeStructureResult, SchemeStructureStatus
 from vyaparsarathi.market.assessment_models import MarketAssessmentResult
 from vyaparsarathi.market.opportunity_models import OpportunityAnalysisResult
 from vyaparsarathi.models.parameters import FinanceKnowledgeEvidence, ResolutionStatus
@@ -35,6 +37,11 @@ class FactOrigin(StrEnum):
     RETRIEVED_RULE = "retrieved_rule"  # a resolved scheme parameter, with a citation
     CALCULATION = "calculation"  # produced by a deterministic engine
     PROFILE = "profile"  # the entrepreneur's own unverified statement
+    # Declared problem-statement configuration (e.g. the SIH26091 10%/90%
+    # split) — an ASSUMED figure this deployment states, never a retrieved
+    # scheme rule (Tier 1; CLAUDE.md §18, §30). Kept distinct from
+    # RETRIEVED_RULE so it can never be mistaken for external evidence.
+    DECLARED_CONFIG = "declared_config"
 
 
 class Fact(BaseModel):
@@ -186,6 +193,56 @@ def build_bundle(session: ConversationSession) -> EvidenceBundle:
                     )
                 )
                 citations[cid] = resolution.citation or resolution.source
+
+    structure = _artifact(session, StepId.STRUCTURE_FINANCE, SchemeStructureResult)
+    if structure is not None and structure.status is SchemeStructureStatus.STRUCTURED:
+        facts.append(
+            Fact(
+                key="structure.scheme_name",
+                label="Financing structure",
+                render=structure.scheme_name,
+                origin=FactOrigin.DECLARED_CONFIG,
+            )
+        )
+        if structure.required_promoter_margin_inr is not None:
+            facts.append(
+                Fact(
+                    key="structure.required_promoter_margin_inr",
+                    label="Required promoter margin",
+                    render=f"Rs {structure.required_promoter_margin_inr}",
+                    origin=FactOrigin.DECLARED_CONFIG,
+                )
+            )
+        if structure.indicated_loan_inr is not None:
+            facts.append(
+                Fact(
+                    key="structure.indicated_loan_inr",
+                    label="Indicated loan",
+                    render=f"Rs {structure.indicated_loan_inr}",
+                    origin=FactOrigin.DECLARED_CONFIG,
+                )
+            )
+        if structure.margin_shortfall_inr is not None and structure.margin_shortfall_inr > 0:
+            facts.append(
+                Fact(
+                    key="structure.margin_shortfall_inr",
+                    label="Margin shortfall against liquid cash",
+                    render=f"Rs {structure.margin_shortfall_inr}",
+                    origin=FactOrigin.DECLARED_CONFIG,
+                )
+            )
+
+    swot = _artifact(session, StepId.SWOT, SwotResult)
+    if swot is not None:
+        for item in swot.items:
+            facts.append(
+                Fact(
+                    key=f"swot.{item.code}",
+                    label=item.quadrant.value.capitalize(),
+                    render=item.text,
+                    origin=FactOrigin.CALCULATION,
+                )
+            )
 
     recommend = _artifact(session, StepId.RECOMMEND, RecommendationResult)
     if recommend is not None:

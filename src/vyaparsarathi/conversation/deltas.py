@@ -213,12 +213,17 @@ def apply_understanding(
             )
         )
 
+    selected_geocode_candidate = session.selected_geocode_candidate
+    if understanding.selected_choice is not None:
+        selected_geocode_candidate = understanding.selected_choice
+
     new_session = session.model_copy(
         update={
             "slots": slots,
             "declined_slots": frozenset(declined),
             "assets": assets,
             "experience_categories": experience,
+            "selected_geocode_candidate": selected_geocode_candidate,
         }
     )
     return new_session, warnings

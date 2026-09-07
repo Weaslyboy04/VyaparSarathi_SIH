@@ -290,5 +290,71 @@ def test_snapshot_carries_the_recommendation(tmp_path: Path) -> None:
     assert "verdict" in snap.recommendation
 
 
+def test_snapshot_carries_structure_and_swot_artifacts_even_when_scheme_unconfigured(
+    tmp_path: Path,
+) -> None:
+    """Tier 1: STRUCTURE_FINANCE and SWOT are part of the real DAG and must
+    reach a complete session's snapshot — even with the shipped
+    (unconfigured) scheme default, where STRUCTURE_FINANCE reports
+    NOT_CONFIGURED rather than being skipped."""
+    from vyaparsarathi.conversation.session_models import StepId
+
+    service, _ = _service(tmp_path)
+    handle = service.start_session(
+        StartSessionRequest(channel=ChannelId.TEST, started_at=datetime.now(UTC))
+    )
+    updates = _provide_info(
+        proposed_business_text=(
+            "a pulses grocery store",
+            "a pulses grocery store",
+            ValueNormalization.AS_STATED,
+        ),
+        location_text=("Bhagwanpur, Bihar", "Bhagwanpur, Bihar", ValueNormalization.AS_STATED),
+        liquid_cash_inr=("I have 6.5 lakh", "6.5 lakh", ValueNormalization.LAKH_TO_INR),
+        monthly_revenue_inr=("40000", "40000", ValueNormalization.AS_STATED),
+        cogs_pct=("70%", "70%", ValueNormalization.PERCENT_TO_RATIO),
+        project_cost_inr=("3 lakh", "3 lakh", ValueNormalization.LAKH_TO_INR),
+        fixed_opex_inr=("4000", "4000", ValueNormalization.AS_STATED),
+    )
+    service.send_message(_msg(handle.session_id, slot_updates=updates))
+    snap = service.snapshot(handle.session_id)
+    assert snap is not None
+    assert StepId.STRUCTURE_FINANCE.value in snap.artifacts
+    assert StepId.SWOT.value in snap.artifacts
+    assert snap.artifacts[StepId.STRUCTURE_FINANCE.value]["payload"]["status"] == "not_configured"
+
+
+def test_correcting_cash_invalidates_structure_and_swot_without_rerunning_impure_steps(
+    tmp_path: Path,
+) -> None:
+    from vyaparsarathi.conversation.session_models import StepId
+
+    service, sessions = _service(tmp_path)
+    handle = service.start_session(
+        StartSessionRequest(channel=ChannelId.TEST, started_at=datetime.now(UTC))
+    )
+    first = _provide_info(
+        proposed_business_text=("grocery", "grocery", ValueNormalization.AS_STATED),
+        location_text=("Bhagwanpur, Bihar", "Bhagwanpur, Bihar", ValueNormalization.AS_STATED),
+        liquid_cash_inr=("I have 6.5 lakh", "6.5 lakh", ValueNormalization.LAKH_TO_INR),
+        monthly_revenue_inr=("40000", "40000", ValueNormalization.AS_STATED),
+        cogs_pct=("70%", "70%", ValueNormalization.PERCENT_TO_RATIO),
+        project_cost_inr=("3 lakh", "3 lakh", ValueNormalization.LAKH_TO_INR),
+        fixed_opex_inr=("4000", "4000", ValueNormalization.AS_STATED),
+    )
+    service.send_message(_msg(handle.session_id, slot_updates=first))
+
+    correction = _provide_info(
+        liquid_cash_inr=("actually only 4 lakh", "4 lakh", ValueNormalization.LAKH_TO_INR)
+    )
+    service.send_message(_msg(handle.session_id, slot_updates=correction))
+
+    session = sessions.get(handle.session_id)
+    last_turn = session.turns[-1]
+    assert StepId.STRUCTURE_FINANCE in last_turn.steps_invalidated
+    assert StepId.SWOT in last_turn.steps_invalidated
+    assert StepId.DISCOVER not in last_turn.steps_invalidated
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -23,6 +23,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from vyaparsarathi.config import Settings
+from vyaparsarathi.config.sih_scheme import DEFAULT_SIH_SCHEME_CONFIG
 from vyaparsarathi.conversation.artifacts import compute_fingerprints, record_artifact
 from vyaparsarathi.conversation.conversation_config import (
     DEFAULT_CONVERSATION_CONFIG,
@@ -46,6 +47,8 @@ from vyaparsarathi.conversation.session_models import (
     StepId,
 )
 from vyaparsarathi.conversation.step_models import STEP_RESULT_MODEL
+from vyaparsarathi.conversation.swot import build_swot
+from vyaparsarathi.conversation.swot_config import DEFAULT_SWOT_CONFIG
 from vyaparsarathi.database.repository import BusinessRepository
 from vyaparsarathi.discovery.demand_acquisition import acquire_demand_evidence
 from vyaparsarathi.discovery.knowledge_acquisition import acquire_finance_knowledge
@@ -55,6 +58,8 @@ from vyaparsarathi.finance.assessment import assess_financials
 from vyaparsarathi.finance.assessment_models import FinancialAssessmentResult
 from vyaparsarathi.finance.finance_config import DEFAULT_FINANCE_CONFIG
 from vyaparsarathi.finance.fit import to_financial_fit
+from vyaparsarathi.finance.structuring import apply_structure, structure_financing
+from vyaparsarathi.finance.structuring_models import SchemeStructureResult
 from vyaparsarathi.knowledge.base import CorpusStore, Retriever
 from vyaparsarathi.knowledge.knowledge_config import DEFAULT_KNOWLEDGE_CONFIG
 from vyaparsarathi.knowledge.plan_binding import bind_sourced_inputs, build_loan_terms
@@ -326,11 +331,22 @@ def _run_bind_plan(
     return session, new_plan
 
 
+def _run_structure_finance(
+    session: ConversationSession, ctx: RunContext
+) -> tuple[ConversationSession, BaseModel]:
+    plan = _load(session, StepId.BIND_PLAN, FinancialPlanInput)
+    return session, structure_financing(
+        plan, scheme_cfg=DEFAULT_SIH_SCHEME_CONFIG, fin_cfg=DEFAULT_FINANCE_CONFIG
+    )
+
+
 def _run_assess_finance(
     session: ConversationSession, ctx: RunContext
 ) -> tuple[ConversationSession, BaseModel]:
     plan = _load(session, StepId.BIND_PLAN, FinancialPlanInput)
-    return session, assess_financials(plan, cfg=DEFAULT_FINANCE_CONFIG)
+    structure = _load(session, StepId.STRUCTURE_FINANCE, SchemeStructureResult)
+    structured_plan = apply_structure(plan, structure)
+    return session, assess_financials(structured_plan, cfg=DEFAULT_FINANCE_CONFIG)
 
 
 def _run_financial_fit(
@@ -349,6 +365,18 @@ def _run_recommend(
     return session, combine(opportunity, market, finance, cfg=ctx.conv_cfg)
 
 
+def _run_swot(
+    session: ConversationSession, ctx: RunContext
+) -> tuple[ConversationSession, BaseModel]:
+    opportunity = _load(session, StepId.OPPORTUNITY, OpportunityAnalysisResult)
+    finance = _load(session, StepId.ASSESS_FINANCE, FinancialAssessmentResult)
+    structure = _load(session, StepId.STRUCTURE_FINANCE, SchemeStructureResult)
+    market = _try_load(session, StepId.ASSESS_MARKET, MarketAssessmentResult)
+    return session, build_swot(
+        opportunity, finance, market=market, structure=structure, cfg=DEFAULT_SWOT_CONFIG
+    )
+
+
 StepRunner = Callable[[ConversationSession, RunContext], tuple[ConversationSession, BaseModel]]
 
 STEP_RUNNERS: dict[StepId, StepRunner] = {
@@ -364,9 +392,11 @@ STEP_RUNNERS: dict[StepId, StepRunner] = {
     StepId.FINANCE_KNOWLEDGE: _run_finance_knowledge,
     StepId.BUILD_PLAN: _run_build_plan,
     StepId.BIND_PLAN: _run_bind_plan,
+    StepId.STRUCTURE_FINANCE: _run_structure_finance,
     StepId.ASSESS_FINANCE: _run_assess_finance,
     StepId.FINANCIAL_FIT: _run_financial_fit,
     StepId.RECOMMEND: _run_recommend,
+    StepId.SWOT: _run_swot,
 }
 
 # The exact config each pure engine call was made with, `model_dump(mode="json")`
@@ -380,10 +410,22 @@ CONFIG_BLOBS: dict[StepId, dict] = {
     StepId.METRICS: DEFAULT_METRICS_CONFIG.model_dump(mode="json"),
     StepId.DEMAND_SIGNALS: DEFAULT_DEMAND_CONFIG.model_dump(mode="json"),
     StepId.ASSESS_MARKET: DEFAULT_ASSESSMENT_CONFIG.model_dump(mode="json"),
+    # Nested (not a single model's dump): structure_financing() takes two
+    # distinct configs. Either one changing — a scheme figure or a finance
+    # structural default — must bust the fingerprint.
+    StepId.STRUCTURE_FINANCE: {
+        "scheme": (
+            DEFAULT_SIH_SCHEME_CONFIG.model_dump(mode="json")
+            if DEFAULT_SIH_SCHEME_CONFIG is not None
+            else None
+        ),
+        "finance": DEFAULT_FINANCE_CONFIG.model_dump(mode="json"),
+    },
     StepId.OPPORTUNITY: DEFAULT_OPPORTUNITY_CONFIG.model_dump(mode="json"),
     StepId.BIND_PLAN: DEFAULT_KNOWLEDGE_CONFIG.model_dump(mode="json"),
     StepId.ASSESS_FINANCE: DEFAULT_FINANCE_CONFIG.model_dump(mode="json"),
     StepId.RECOMMEND: DEFAULT_CONVERSATION_CONFIG.model_dump(mode="json"),
+    StepId.SWOT: DEFAULT_SWOT_CONFIG.model_dump(mode="json"),
 }
 
 
