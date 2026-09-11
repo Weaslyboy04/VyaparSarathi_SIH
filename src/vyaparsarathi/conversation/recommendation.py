@@ -72,7 +72,9 @@ def combine(
             verdict=Verdict.PIVOT,
             reason=(
                 f"{pivot_name} scores materially higher on local market evidence than "
-                "the proposed business."
+                "the proposed business — a potential opportunity, not a decided call. "
+                "Trade experience and licensing/compliance requirements are not checked "
+                "in this assessment; verify both locally before committing."
             ),
             stance=stance,
             financial_status=status,

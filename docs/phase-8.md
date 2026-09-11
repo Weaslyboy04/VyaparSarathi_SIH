@@ -182,7 +182,7 @@ DprService(session_repo).generate(session_id, generated_at=when,  # writes PDF +
 ./.venv/Scripts/python.exe scripts/phase8_demo.py
 ```
 
-The demo report currently comes out **`DPR-9DF3C947297C75A3`**: recommendation
+The demo report currently comes out **`DPR-5CFFC02EE224B5E4`**: recommendation
 *Pivot* → dairy (a better-scoring local alternative than the proposed pulses
 grocery — the CLAUDE.md §32 "catch a poor decision, point to a better one"
 story), financial status *Feasible with stretch* on the stated plan, one

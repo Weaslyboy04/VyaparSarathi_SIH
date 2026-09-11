@@ -53,6 +53,7 @@ from vyaparsarathi.conversation.swot_config import DEFAULT_SWOT_CONFIG
 from vyaparsarathi.database.repository import BusinessRepository
 from vyaparsarathi.discovery.demand_acquisition import acquire_demand_evidence
 from vyaparsarathi.discovery.knowledge_acquisition import acquire_finance_knowledge
+from vyaparsarathi.discovery.market_price_acquisition import acquire_market_price_evidence
 from vyaparsarathi.discovery.opportunity_acquisition import acquire_opportunity_evidence
 from vyaparsarathi.discovery.service import DiscoveryService
 from vyaparsarathi.finance.assessment import assess_financials
@@ -79,13 +80,17 @@ from vyaparsarathi.market.models import CompetitorAnalysisResult, ProposedBusine
 from vyaparsarathi.market.opportunity import score_opportunities
 from vyaparsarathi.market.opportunity_config import DEFAULT_OPPORTUNITY_CONFIG
 from vyaparsarathi.market.opportunity_models import FinancialFitInput, OpportunityAnalysisResult
+from vyaparsarathi.market.price_config import DEFAULT_MARKET_PRICE_CONFIG
+from vyaparsarathi.market.price_signal import compute_market_price_signal
 from vyaparsarathi.market.proposed import resolve_proposed_business
 from vyaparsarathi.models.demand import DemandEvidence
 from vyaparsarathi.models.finance import FinancialPlanInput, MoratoriumTreatment
+from vyaparsarathi.models.market_price import MarketPriceEvidence, MarketPriceStatus
 from vyaparsarathi.models.opportunity import OpportunityEvidence
 from vyaparsarathi.models.parameters import FinanceKnowledgeEvidence, ParameterName, ParameterQuery
 from vyaparsarathi.models.results import DiscoveryResult, DiscoveryStatus
 from vyaparsarathi.models.taxonomy import BusinessCategory
+from vyaparsarathi.sources.agmarknet.adapter import AgmarknetSource
 from vyaparsarathi.sources.census.loader import CensusVillageSource
 from vyaparsarathi.sources.osm.client import OverpassClient
 from vyaparsarathi.utils.logging import get_logger
@@ -107,6 +112,10 @@ class RunContext:
     corpus: CorpusStore
     repository: BusinessRepository
     retriever: Retriever | None = None
+    # `None` when a caller (a test fixture, a scenario predating this step)
+    # never wired one up — `_run_market_price_evidence` treats that exactly
+    # like "not configured", never a crash (CLAUDE.md §30).
+    agmarknet_source: AgmarknetSource | None = None
     clock: Clock = field(default=utcnow)
     conv_cfg: ConversationConfig = field(default=DEFAULT_CONVERSATION_CONFIG)
     # DEVELOPER (default) keeps every pre-Phase-B test/demo's incremental
@@ -254,6 +263,36 @@ def _run_demand_signals(
     return session, compute_demand_signals(
         evidence, competition=metrics, config=DEFAULT_DEMAND_CONFIG
     )
+
+
+def _run_market_price_evidence(
+    session: ConversationSession, ctx: RunContext
+) -> tuple[ConversationSession, BaseModel]:
+    proposed = _load(session, StepId.RESOLVE_PROPOSED, ProposedBusiness)
+    if ctx.agmarknet_source is None:
+        return session, MarketPriceEvidence(
+            status=MarketPriceStatus.NOT_CONFIGURED,
+            category=proposed.category if proposed.resolved else None,
+            subtypes=tuple(proposed.subtypes),
+            acquired_at=ctx.clock(),
+        )
+    discovery = _try_load(session, StepId.DISCOVER, DiscoveryResult)
+    resolved_place = discovery.resolved_place if discovery is not None else None
+    evidence = acquire_market_price_evidence(
+        proposed,
+        resolved_place,
+        client=ctx.agmarknet_source,
+        settings=ctx.settings,
+        clock=ctx.clock,
+    )
+    return session, evidence
+
+
+def _run_market_price_signal(
+    session: ConversationSession, ctx: RunContext
+) -> tuple[ConversationSession, BaseModel]:
+    evidence = _load(session, StepId.MARKET_PRICE_EVIDENCE, MarketPriceEvidence)
+    return session, compute_market_price_signal(evidence, config=DEFAULT_MARKET_PRICE_CONFIG)
 
 
 def _run_assess_market(
@@ -426,6 +465,8 @@ STEP_RUNNERS: dict[StepId, StepRunner] = {
     StepId.METRICS: _run_metrics,
     StepId.DEMAND_EVIDENCE: _run_demand_evidence,
     StepId.DEMAND_SIGNALS: _run_demand_signals,
+    StepId.MARKET_PRICE_EVIDENCE: _run_market_price_evidence,
+    StepId.MARKET_PRICE_SIGNAL: _run_market_price_signal,
     StepId.ASSESS_MARKET: _run_assess_market,
     StepId.OPPORTUNITY_EVIDENCE: _run_opportunity_evidence,
     StepId.OPPORTUNITY: _run_opportunity,
@@ -450,6 +491,7 @@ STEP_RUNNERS: dict[StepId, StepRunner] = {
 CONFIG_BLOBS: dict[StepId, dict] = {
     StepId.METRICS: DEFAULT_METRICS_CONFIG.model_dump(mode="json"),
     StepId.DEMAND_SIGNALS: DEFAULT_DEMAND_CONFIG.model_dump(mode="json"),
+    StepId.MARKET_PRICE_SIGNAL: DEFAULT_MARKET_PRICE_CONFIG.model_dump(mode="json"),
     StepId.ASSESS_MARKET: DEFAULT_ASSESSMENT_CONFIG.model_dump(mode="json"),
     # Nested (not a single model's dump): structure_financing() takes two
     # distinct configs. Either one changing — a scheme figure or a finance

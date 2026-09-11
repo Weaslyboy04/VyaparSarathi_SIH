@@ -26,8 +26,10 @@ from vyaparsarathi.market.demand_models import DemandSignalsResult
 from vyaparsarathi.market.metrics_models import CompetitionMetricsResult
 from vyaparsarathi.market.models import CompetitorAnalysisResult, ProposedBusiness
 from vyaparsarathi.market.opportunity_models import FinancialFitInput, OpportunityAnalysisResult
+from vyaparsarathi.market.price_models import MarketPriceSignalResult
 from vyaparsarathi.models.demand import DemandEvidence
 from vyaparsarathi.models.finance import FinancialPlanInput
+from vyaparsarathi.models.market_price import MarketPriceEvidence
 from vyaparsarathi.models.opportunity import OpportunityEvidence
 from vyaparsarathi.models.parameters import FinanceKnowledgeEvidence
 from vyaparsarathi.models.results import DiscoveryResult
@@ -39,6 +41,8 @@ STEP_RESULT_MODEL: dict[StepId, type[BaseModel]] = {
     StepId.METRICS: CompetitionMetricsResult,
     StepId.DEMAND_EVIDENCE: DemandEvidence,
     StepId.DEMAND_SIGNALS: DemandSignalsResult,
+    StepId.MARKET_PRICE_EVIDENCE: MarketPriceEvidence,
+    StepId.MARKET_PRICE_SIGNAL: MarketPriceSignalResult,
     StepId.ASSESS_MARKET: MarketAssessmentResult,
     StepId.OPPORTUNITY_EVIDENCE: OpportunityEvidence,
     StepId.OPPORTUNITY: OpportunityAnalysisResult,

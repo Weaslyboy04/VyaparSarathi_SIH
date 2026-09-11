@@ -93,6 +93,24 @@ def build_citations(arts: ArtifactSet) -> dict[str, Citation]:
             reference_date=years.split(",")[0].strip(),
         )
 
+    price = arts.market_price
+    price_ev = arts.market_price_evidence
+    if price is not None and price.benchmarks:
+        most_recent = max(b.most_recent_arrival_date for b in price.benchmarks)
+        location = price.district_used or (price_ev.state if price_ev is not None else "") or ""
+        out["AGM"] = Citation(
+            citation_id="AGM",
+            text=(
+                f"Wholesale mandi prices for {', '.join(b.commodity for b in price.benchmarks)}"
+                + (f" near {location}" if location else "")
+                + (" (widened to state level)" if price.is_state_widened else "")
+                + "."
+            ),
+            publisher="Ministry of Agriculture & Farmers Welfare (AGMARKNET), data.gov.in",
+            url=(price_ev.endpoint_used or "") if price_ev is not None else "",
+            reference_date=most_recent.isoformat(),
+        )
+
     return out
 
 

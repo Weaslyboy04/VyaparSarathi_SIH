@@ -66,3 +66,17 @@ def test_scheme_capacity_screen_shown_alongside_actual_financing(tmp_path: Path)
     # the two are not confusable with each other
     assert fin.capacity_note
     assert "not a" in fin.capacity_note.lower() or "capacity" in fin.capacity_note.lower()
+
+
+def test_repayment_schedule_is_wired_into_the_financial_section(tmp_path: Path) -> None:
+    """Priority 8: the real business-based debt schedule (`fin.debt`) must
+    reach the DPR as a quarterly repayment timeline, not stop at the single
+    EMI figure — the moratorium quarters and the switch into repayment must
+    both be visible."""
+    session = run_pipeline(full_scenario_turns(), tmp_path=tmp_path)
+    doc = assemble_report(session, generated_at=_GEN)
+    schedule = doc.financial.repayment_schedule
+    assert schedule
+    assert schedule[0].status == "Moratorium"
+    assert any(q.status == "Repayment" for q in schedule)
+    assert schedule[-1].closing_balance.display == "₹0"

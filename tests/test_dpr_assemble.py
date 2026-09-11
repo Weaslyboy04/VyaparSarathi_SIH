@@ -51,6 +51,29 @@ def test_executive_summary_reflects_the_recommendation(tmp_path: Path) -> None:
     assert any("bank" in a.lower() or "block office" in a.lower() for a in es.next_actions)
 
 
+def test_pivot_next_action_flags_verification_not_a_directive(tmp_path: Path) -> None:
+    """The standard full scenario's default shops include a pharmacy, which
+    yields a Pivot verdict — the judge's own worked example. The executive
+    summary's "next action" bullet must not read as an unqualified
+    directive; it must say the pivot needs verification (trade experience,
+    licensing/compliance are never checked in this phase — CLAUDE.md §30)."""
+    doc = _full(tmp_path)
+    es = doc.executive_summary
+    assert es.recommendation.display == "Pivot"
+    pivot_action = next(a for a in es.next_actions if "scored materially higher" in a)
+    assert "verify" in pivot_action.lower() or "verification" in pivot_action.lower()
+
+
+def test_cover_generated_on_displays_ist_not_utc(tmp_path: Path) -> None:
+    """This is an India-focused product — the display timestamp should
+    read in Asia/Kolkata local time, not UTC. `_GEN` is 09:00 UTC, which is
+    14:30 IST."""
+    doc = _full(tmp_path)
+    assert "UTC" not in doc.cover.generated_on
+    assert "IST" in doc.cover.generated_on
+    assert "14:30" in doc.cover.generated_on
+
+
 def test_empty_knowledge_corpus_yields_no_sourced_scheme_facts(tmp_path: Path) -> None:
     # run_pipeline defaults to an empty corpus dir
     doc = assemble_report(run_pipeline(full_scenario_turns(), tmp_path=tmp_path), generated_at=_GEN)
@@ -132,6 +155,31 @@ def test_slot_history_is_recorded_on_a_correction(tmp_path: Path) -> None:
     assert len(cash_rows) == 2
     assert any(r.superseded for r in cash_rows)
     assert any(not r.superseded and r.value == "400000" for r in cash_rows)
+
+
+def test_finance_assumption_labels_and_units_are_plain_language(tmp_path: Path) -> None:
+    """The assumptions section's finance-input rows used to carry the raw
+    label token with a "finance: " prefix and a bare `f"{value} {unit}"`
+    string (e.g. "finance: project_cost_inr" / "500000 inr") -- both
+    internal engine vocabulary a rural entrepreneur should never see."""
+    doc = _full(tmp_path)
+    all_items = (
+        *doc.assumptions.user_inputs,
+        *doc.assumptions.assumptions,
+        *doc.assumptions.calculated_results,
+    )
+    finance_items = [i for i in all_items if i.origin in ("user_provided", "assumed")]
+    assert finance_items, "fixture must produce at least one finance assumption row"
+    for item in finance_items:
+        assert not item.label.startswith("finance:")
+        assert "_inr" not in item.label and "_pct" not in item.label
+    labels = {i.label for i in finance_items}
+    assert "Project cost" in labels
+    assert "Loan interest rate" in labels
+    details = " ".join(i.detail for i in finance_items)
+    assert "inr" not in details.lower()
+    assert "₹" in details
+    assert "per annum" in details
 
 
 def test_two_assemblies_produce_byte_identical_json_bar_the_date(tmp_path: Path) -> None:

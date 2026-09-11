@@ -119,10 +119,21 @@ def _fingerprint_one(
         payload["experience"] = sorted(c.value for c in session.experience_categories.current.items)
     if step in (StepId.DISCOVER, StepId.DEMAND_EVIDENCE):
         payload["geocode_candidate"] = session.selected_geocode_candidate
-    if step in (StepId.BUILD_PLAN, StepId.FINANCE_KNOWLEDGE, StepId.SCHEME_CAPACITY):
+    if step in (
+        StepId.BUILD_PLAN,
+        StepId.FINANCE_KNOWLEDGE,
+        StepId.SCHEME_CAPACITY,
+        StepId.MARKET_PRICE_EVIDENCE,
+    ):
         payload["resolved_category"] = (
             session.resolved_category.value if session.resolved_category is not None else None
         )
+    if step is StepId.MARKET_PRICE_EVIDENCE:
+        # A correction from "grocery" to "pulses grocery" queries different
+        # commodities — the cached artifact must invalidate on a subtype
+        # change too, not just a category change (CLAUDE.md §30: a stale,
+        # wrong-commodity result must never silently survive a correction).
+        payload["resolved_subtypes"] = list(session.resolved_subtypes)
     blob = json.dumps(payload, sort_keys=True, default=_json_default)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

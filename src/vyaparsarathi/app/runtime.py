@@ -28,6 +28,7 @@ from vyaparsarathi.knowledge.retrieval import LexicalRetriever
 from vyaparsarathi.llm.gemini_provider import GeminiLlmProvider
 from vyaparsarathi.llm.provider import HttpLlmProvider, LlmProvider
 from vyaparsarathi.llm.tools import RunContext
+from vyaparsarathi.sources.agmarknet.adapter import AgmarknetSource
 from vyaparsarathi.sources.census.loader import CensusVillageSource
 from vyaparsarathi.sources.knowledge.loader import FileCorpusStore
 from vyaparsarathi.sources.osm.adapter import OverpassSource
@@ -48,9 +49,15 @@ class AdvisoryRuntime:
     # `settings.llm_enabled` directly, so a runtime built without a key
     # never accidentally attempts a call.
     llm_provider: LlmProvider | None = None
+    # `None` for a minimal/test runtime that never wired AGMARKNET up —
+    # `RunContext.agmarknet_source` being `None` already degrades every
+    # market-price step to "not configured" (CLAUDE.md §30), never a crash.
+    agmarknet_source: AgmarknetSource | None = None
 
     def close(self) -> None:
         self.overpass_client.close()
+        if self.agmarknet_source is not None:
+            self.agmarknet_source.close()
         close = getattr(self.geocoder, "close", None)
         if callable(close):
             close()
@@ -74,6 +81,7 @@ def build_default_runtime(
     geocoder = NominatimGeocoder(s)
     overpass_client = OverpassClient(s)
     discovery_source = OverpassSource(s, client=overpass_client)
+    agmarknet_source = AgmarknetSource(s)
     repo = repository or InMemoryBusinessRepository()
     discovery_service = DiscoveryService(
         geocoder=geocoder, source=discovery_source, repository=repo, settings=s
@@ -90,6 +98,7 @@ def build_default_runtime(
         settings=s,
         discovery_service=discovery_service,
         overpass_client=overpass_client,
+        agmarknet_source=agmarknet_source,
         census=census,
         corpus=corpus,
         repository=repo,
@@ -102,6 +111,7 @@ def build_default_runtime(
         run_context=ctx,
         geocoder=geocoder,
         overpass_client=overpass_client,
+        agmarknet_source=agmarknet_source,
         llm_provider=build_llm_provider(s),
     )
 

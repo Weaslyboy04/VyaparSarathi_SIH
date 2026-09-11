@@ -265,7 +265,7 @@ class ExperienceSetSlot(BaseModel):
 
 
 class StepId(StrEnum):
-    """The 18-node step DAG (`conversation/workflow.py` declares the edges;
+    """The 20-node step DAG (`conversation/workflow.py` declares the edges;
     this is just the closed set of names). `*` = impure (owns a `StepRunner`
     in `llm/tools.py` that touches network/disk); the rest are pure engine
     calls over already-acquired evidence."""
@@ -276,6 +276,8 @@ class StepId(StrEnum):
     METRICS = "metrics"
     DEMAND_EVIDENCE = "demand_evidence"  # *
     DEMAND_SIGNALS = "demand_signals"
+    MARKET_PRICE_EVIDENCE = "market_price_evidence"  # *
+    MARKET_PRICE_SIGNAL = "market_price_signal"
     ASSESS_MARKET = "assess_market"
     OPPORTUNITY_EVIDENCE = "opportunity_evidence"  # *
     OPPORTUNITY = "opportunity"

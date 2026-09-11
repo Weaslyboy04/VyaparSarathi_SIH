@@ -11,11 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pypdf import PdfReader
+from reportlab.platypus import KeepTogether, Paragraph
 
 from tests.dpr_pipeline import full_scenario_turns, run_pipeline
 from vyaparsarathi.dpr.assemble import assemble_report
 from vyaparsarathi.dpr.provenance import GapReason, pv_calc, pv_missing
-from vyaparsarathi.dpr.render_pdf import render_pdf_bytes
+from vyaparsarathi.dpr.render_pdf import _h2_block, _styles, render_pdf_bytes
 from vyaparsarathi.dpr.report_models import CalcProvenanceLine, SlotHistoryLine, StressLine
 
 _GEN = datetime(2026, 9, 9, 9, 0, tzinfo=UTC)
@@ -88,6 +89,32 @@ def test_long_stress_and_calc_tables_render(tmp_path: Path) -> None:
     pdf = render_pdf_bytes(doc)
     assert pdf.startswith(b"%PDF-")
     assert _pages(pdf) >= 6
+
+
+def test_h2_block_keeps_heading_and_content_together() -> None:
+    """A sub-heading must never be able to land alone at the bottom of a
+    page, separated from the table/bullets it introduces — `_h2_block`
+    wraps both in one `KeepTogether` so ReportLab treats them as a single
+    unbreakable unit for pagination purposes."""
+    st = _styles()
+    content = Paragraph("some content", st["body"])
+    result = _h2_block("A heading", content, st=st)
+    assert len(result) == 1
+    assert isinstance(result[0], KeepTogether)
+    wrapped = result[0]._content  # KeepTogether's own flowable list
+    assert len(wrapped) == 2
+    assert isinstance(wrapped[0], Paragraph)
+    assert wrapped[1] is content
+
+
+def test_h2_block_flattens_a_list_of_flowables() -> None:
+    """Call sites that build a bullet list (a `list[Flowable]`) must not
+    need to unpack it themselves before calling `_h2_block`."""
+    st = _styles()
+    bullets = [Paragraph("one", st["body"]), Paragraph("two", st["body"])]
+    result = _h2_block("A heading", bullets, st=st)
+    wrapped = result[0]._content
+    assert len(wrapped) == 3  # heading + 2 bullets, not heading + [list]
 
 
 def test_report_renders_when_a_section_is_totally_empty(tmp_path: Path) -> None:

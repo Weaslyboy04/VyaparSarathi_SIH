@@ -78,5 +78,5 @@ def test_generate_writes_both_files_and_refuses_silent_overwrite(tmp_path: Path)
 
 def test_demo_report_id_is_pinned() -> None:
     # a change here means the demo's evidence changed — update deliberately.
-    assert build_demo_document().report_id == "DPR-9DF3C947297C75A3"
+    assert build_demo_document().report_id == "DPR-5CFFC02EE224B5E4"
     assert DEMO_GENERATED_AT.tzinfo is not None

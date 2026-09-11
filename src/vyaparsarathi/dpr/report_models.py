@@ -75,6 +75,23 @@ class AlternativeOption(BaseModel):
     capital_fit: str = ""
 
 
+class RepaymentQuarterLine(BaseModel):
+    """One quarter of the repayment timeline — a calendar-grouped view over
+    `finance/debt.py`'s month-by-month moratorium + amortisation schedule.
+    Pure re-composition of an already-computed schedule; no new arithmetic."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: str  # e.g. "Q1 (Months 1-3)"
+    status: str  # "Moratorium" | "Repayment" | "Moratorium -> Repayment"
+    opening_balance: ProvenancedValue
+    principal_paid: ProvenancedValue
+    interest_paid: ProvenancedValue
+    total_payment: ProvenancedValue
+    closing_balance: ProvenancedValue
+    note: str = ""
+
+
 class StressLine(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -210,6 +227,36 @@ class MarketAssessmentSection(ReportSection):
     completeness_note: str
 
 
+class CommodityBenchmarkLine(BaseModel):
+    """One commodity's wholesale/mandi price benchmark (CLAUDE.md §3.1, §30:
+    never a retail-price synthesis from this wholesale figure)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    commodity: str
+    price_range: ProvenancedValue
+    median_price: ProvenancedValue
+    most_recent_arrival: str
+    markets_sampled: tuple[str, ...] = ()
+    is_stale: bool = False
+
+
+class MarketPriceSection(ReportSection):
+    """AGMARKNET wholesale mandi price signal (SIH26091 judge-feedback
+    Priority 4). `status` carries one of `MarketPriceStatus`'s seven honest
+    outcomes verbatim — "not relevant to check" and "checked, found nothing"
+    must never look the same to a reader (CLAUDE.md §22, §30)."""
+
+    status_detail: str = ""
+    district_used: ProvenancedValue
+    widened_to_state: bool = False
+    commodities_checked: tuple[str, ...] = ()
+    commodities_skipped: tuple[str, ...] = ()
+    benchmarks: tuple[CommodityBenchmarkLine, ...] = ()
+    not_a_retail_price_note: str = ""
+    caveats: tuple[str, ...] = ()
+
+
 class OpportunitySection(ReportSection):
     proposed_score: ProvenancedValue
     stance: ProvenancedValue
@@ -234,6 +281,18 @@ class ProjectPlanSection(ReportSection):
     # Pure arithmetic on an already-known figure, never an invented price
     # suggestion.
     margin_note: str = ""
+
+
+class DistributionChannelSection(ReportSection):
+    category: ProvenancedValue
+    primary_channel: str = ""
+    secondary_channels: tuple[str, ...] = ()
+    b2b_potential: str = ""
+    supply_channel: str = ""
+    single_channel_risk_note: str = ""
+    # Always populated whenever the section renders — this is generic
+    # category advice, never a location-specific finding (CLAUDE.md §30).
+    guidance_note: str = ""
 
 
 class FinancialAssessmentSection(ReportSection):
@@ -266,6 +325,9 @@ class FinancialAssessmentSection(ReportSection):
     tenure: ProvenancedValue
     moratorium: ProvenancedValue
     monthly_emi: ProvenancedValue
+    # Quarter-by-quarter repayment timeline (CLAUDE.md §17) — empty when no
+    # full debt schedule exists yet (e.g. only the capacity screen ran).
+    repayment_schedule: tuple[RepaymentQuarterLine, ...] = ()
 
     average_annual_dscr: ProvenancedValue
     first_post_moratorium_dscr: ProvenancedValue
@@ -349,8 +411,10 @@ class DprDocument(BaseModel):
     executive_summary: ExecutiveSummary
     profile: EntrepreneurProfileSection
     market: MarketAssessmentSection
+    market_price: MarketPriceSection
     opportunity: OpportunitySection
     project_plan: ProjectPlanSection
+    distribution_channels: DistributionChannelSection
     financial: FinancialAssessmentSection
     scheme_knowledge: SchemeKnowledgeSection
     risks_swot: RisksSwotSection
@@ -366,8 +430,10 @@ class DprDocument(BaseModel):
             self.executive_summary,
             self.profile,
             self.market,
+            self.market_price,
             self.opportunity,
             self.project_plan,
+            self.distribution_channels,
             self.financial,
             self.scheme_knowledge,
             self.risks_swot,
@@ -383,7 +449,9 @@ __all__ = [
     "AssumptionsSection",
     "CalcProvenanceLine",
     "Citation",
+    "CommodityBenchmarkLine",
     "CoverPage",
+    "DistributionChannelSection",
     "DprDocument",
     "EntrepreneurProfileSection",
     "ExecutiveSummary",
@@ -393,10 +461,12 @@ __all__ = [
     "GlossaryEntry",
     "LabeledItem",
     "MarketAssessmentSection",
+    "MarketPriceSection",
     "OpportunitySection",
     "ParameterLine",
     "PassageLine",
     "ProjectPlanSection",
+    "RepaymentQuarterLine",
     "ReportSection",
     "RisksSwotSection",
     "SchemeKnowledgeSection",

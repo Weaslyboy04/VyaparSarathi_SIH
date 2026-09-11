@@ -97,6 +97,24 @@ STEP_SPECS: dict[StepId, StepSpec] = {
         impure=False,
         config_kwarg="config",
     ),
+    # AGMARKNET wholesale mandi price signal (SIH26091 judge-feedback
+    # Priority 4). Needs the resolved category/subtypes (RESOLVE_PROPOSED) as
+    # a hard requirement -- there is no commodity to look up without one --
+    # but a location only REFINES the query (district vs state-only); it is
+    # answerable (even if only "not applicable to this category") before a
+    # location is resolved at all, so DISCOVER is optional, not required.
+    StepId.MARKET_PRICE_EVIDENCE: StepSpec(
+        step=StepId.MARKET_PRICE_EVIDENCE,
+        required_steps=(StepId.RESOLVE_PROPOSED,),
+        optional_steps=(StepId.DISCOVER,),
+        impure=True,
+    ),
+    StepId.MARKET_PRICE_SIGNAL: StepSpec(
+        step=StepId.MARKET_PRICE_SIGNAL,
+        required_steps=(StepId.MARKET_PRICE_EVIDENCE,),
+        impure=False,
+        config_kwarg="config",
+    ),
     StepId.OPPORTUNITY_EVIDENCE: StepSpec(
         step=StepId.OPPORTUNITY_EVIDENCE,
         required_steps=(StepId.DISCOVER, StepId.RESOLVE_PROPOSED, StepId.DEMAND_EVIDENCE),

@@ -36,6 +36,8 @@ def settings(tmp_path: Path) -> Settings:
         overpass_url="https://overpass.test/api/interpreter",
         overpass_mirrors=["https://overpass-mirror.test/api/interpreter"],
         nominatim_url="https://nominatim.test",
+        agmarknet_base_url="https://agmarknet.test/resource/test-resource-id",
+        agmarknet_api_key="test-agmarknet-key",
         nominatim_min_interval_s=0.0,
         http_timeout_s=5.0,
         http_max_retries=2,

@@ -94,6 +94,21 @@ def test_pivot_verdict_always_names_a_pivot() -> None:
     assert result.recommended_pivot is BusinessCategory.DAIRY
 
 
+def test_pivot_reason_flags_verification_not_a_decided_call() -> None:
+    """CLAUDE.md §12/§30: a pivot is a market-evidence comparison, never a
+    decided recommendation — trade experience and licensing/compliance are
+    never checked in this phase, so the reason text must say so rather than
+    stating the alternative "scores materially higher" as an unqualified fact."""
+    result = combine(
+        _opportunity(S.ALTERNATIVE_MATERIALLY_BETTER, pivot=BusinessCategory.PHARMACY),
+        None,
+        _finance(F.FEASIBLE),
+    )
+    reason = result.reason.lower()
+    assert "verify" in reason or "verification" in reason
+    assert "compliance" in reason or "licensing" in reason
+
+
 def test_unserviceable_never_proceeds() -> None:
     for stance in (S.PROPOSED_IS_BEST, S.ALTERNATIVES_COMPARABLE):
         result = combine(_opportunity(stance), None, _finance(F.UNSERVICEABLE))

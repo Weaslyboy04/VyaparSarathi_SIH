@@ -16,11 +16,14 @@ from vyaparsarathi.conversation.session_models import ConversationSession, SlotN
 from vyaparsarathi.dpr.artifacts import ArtifactSet
 from vyaparsarathi.dpr.disclaimers import (
     DECLARED_CONFIG_NOTE,
+    DISTRIBUTION_CHANNELS_NOTE,
     FINANCIAL_INCOMPLETE_NOTE,
     MARKET_COMPLETENESS_NOTE,
     PROFILE_UNVERIFIED_NOTE,
     PROJECT_PLAN_NOTE,
+    WHOLESALE_NOT_RETAIL_NOTE,
 )
+from vyaparsarathi.dpr.distribution_channels import distribution_channels_for
 from vyaparsarathi.dpr.format import (
     format_confidence,
     format_distance_m,
@@ -41,13 +44,17 @@ from vyaparsarathi.dpr.provenance import (
     pv_sourced,
     pv_user,
 )
+from vyaparsarathi.dpr.repayment_schedule import build_quarterly_repayment_schedule
 from vyaparsarathi.dpr.report_models import (
     AlternativeOption,
+    CommodityBenchmarkLine,
+    DistributionChannelSection,
     EntrepreneurProfileSection,
     FactorBreakdown,
     FinancialAssessmentSection,
     LabeledItem,
     MarketAssessmentSection,
+    MarketPriceSection,
     OpportunitySection,
     ParameterLine,
     PassageLine,
@@ -60,6 +67,7 @@ from vyaparsarathi.dpr.report_models import (
 )
 from vyaparsarathi.dpr.slots import as_decimal, slot_value
 from vyaparsarathi.models.finance import FinancialInput, InputKind, LoanTerms
+from vyaparsarathi.models.market_price import MarketPriceStatus
 from vyaparsarathi.models.parameters import ParameterName, ResolutionStatus
 from vyaparsarathi.models.results import DiscoveryStatus
 
@@ -454,6 +462,107 @@ def build_market_section(
     )
 
 
+# --- market price (AGMARKNET wholesale mandi signal) ---------------------
+
+# Every honest MarketPriceStatus outcome gets genuinely distinct wording —
+# "not relevant to check" and "checked, found nothing" are different facts
+# and must never look the same to a reader (CLAUDE.md §22, §30).
+_MARKET_PRICE_GAP_NOTES: dict[MarketPriceStatus, str] = {
+    MarketPriceStatus.NOT_APPLICABLE_CATEGORY: (
+        "AGMARKNET tracks wholesale mandi prices for farm commodities; this business "
+        "category doesn't trade in one, so no price signal applies here."
+    ),
+    MarketPriceStatus.LOCATION_UNRESOLVED: (
+        "No state/district has been resolved for this location yet, so a "
+        "locally-relevant mandi price cannot be looked up."
+    ),
+    MarketPriceStatus.NOT_CONFIGURED: (
+        "AGMARKNET price lookup is not configured for this deployment (no API key set)."
+    ),
+    MarketPriceStatus.SOURCE_UNAVAILABLE: (
+        "AGMARKNET could not be reached; no market-price signal is available for this session."
+    ),
+    MarketPriceStatus.NO_RECORDS_FOUND: (
+        "AGMARKNET was checked for the relevant commodities but reported no recent "
+        "arrivals for this location."
+    ),
+}
+
+def build_market_price_section(
+    session: ConversationSession, arts: ArtifactSet
+) -> MarketPriceSection:
+    price = arts.market_price
+    if price is None:
+        return MarketPriceSection(
+            title="Local wholesale price signal",
+            status=SectionStatus.EVIDENCE_GAP,
+            gap_note="The market-price signal has not run for this session.",
+            district_used=pv_missing("District queried", reason=GapReason.NO_EVIDENCE),
+        )
+
+    district_pv = (
+        pv_calc("District queried", price.district_used, inputs=("resolved location",))
+        if price.district_used
+        else pv_missing("District queried", reason=GapReason.NO_EVIDENCE)
+    )
+
+    gap_note = _MARKET_PRICE_GAP_NOTES.get(price.status, "")
+    if gap_note:
+        return MarketPriceSection(
+            title="Local wholesale price signal",
+            status=SectionStatus.EVIDENCE_GAP,
+            gap_note=gap_note,
+            district_used=district_pv,
+            commodities_checked=price.commodities_queried,
+            commodities_skipped=price.commodities_skipped,
+        )
+
+    benchmarks = tuple(
+        CommodityBenchmarkLine(
+            commodity=b.commodity,
+            price_range=pv_calc(
+                "Price range",
+                f"{format_inr(b.min_modal_price_inr_per_quintal)} - "
+                f"{format_inr(b.max_modal_price_inr_per_quintal)} per quintal",
+                inputs=("AGMARKNET modal price quotes",),
+            ),
+            median_price=pv_calc(
+                "Median modal price",
+                f"{format_inr(b.median_modal_price_inr_per_quintal)} per quintal",
+                inputs=("AGMARKNET modal price quotes",),
+            ),
+            most_recent_arrival=b.most_recent_arrival_date.isoformat(),
+            markets_sampled=b.markets_sampled,
+            is_stale=b.is_stale,
+        )
+        for b in price.benchmarks
+    )
+
+    caveats = list(price.warnings)
+    if price.is_state_widened:
+        caveats.append(
+            "No AGMARKNET records matched the exact district; these figures are "
+            "widened to state level and are not specific to your exact location."
+        )
+    for b in benchmarks:
+        if b.is_stale:
+            caveats.append(
+                f"{b.commodity}'s most recent arrival ({b.most_recent_arrival}) is stale."
+            )
+
+    return MarketPriceSection(
+        title="Local wholesale price signal",
+        status=SectionStatus.PARTIAL if price.is_state_widened else SectionStatus.RENDERED,
+        district_used=district_pv,
+        widened_to_state=price.is_state_widened,
+        commodities_checked=price.commodities_queried,
+        commodities_skipped=price.commodities_skipped,
+        benchmarks=benchmarks,
+        not_a_retail_price_note=WHOLESALE_NOT_RETAIL_NOTE if benchmarks else "",
+        caveats=tuple(caveats),
+    )
+
+
 # --- opportunity ---------------------------------------------------------
 
 
@@ -643,6 +752,39 @@ def build_project_plan_section(
     )
 
 
+# --- distribution channels ----------------------------------------------
+
+
+def build_distribution_channels_section(
+    session: ConversationSession, arts: ArtifactSet
+) -> DistributionChannelSection:
+    if session.resolved_category is None or not session.resolved_category_resolved:
+        return DistributionChannelSection(
+            title="Distribution channels",
+            status=SectionStatus.EVIDENCE_GAP,
+            gap_note="The business category has not been resolved yet; no category-level "
+            "distribution guidance can be shown.",
+            category=pv_missing("Business category", reason=GapReason.NO_EVIDENCE),
+        )
+
+    category = session.resolved_category
+    cat_pv = pv_calc(
+        "Business category", category.value, inputs=("proposed_business_text",)
+    )
+    guidance = distribution_channels_for(category)
+    return DistributionChannelSection(
+        title="Distribution channels",
+        status=SectionStatus.RENDERED,
+        category=cat_pv,
+        primary_channel=guidance.primary_channel,
+        secondary_channels=guidance.secondary_channels,
+        b2b_potential=guidance.b2b_potential,
+        supply_channel=guidance.supply_channel,
+        single_channel_risk_note=guidance.single_channel_risk_note,
+        guidance_note=DISTRIBUTION_CHANNELS_NOTE,
+    )
+
+
 # --- financial ---------------------------------------------------------
 
 
@@ -708,12 +850,14 @@ def build_financial_section(
             "Project cost",
             format_inr(fin.project_cost.project_cost_inr),
             inputs=("cost lines", "contingency", "net working capital"),
+            raw=str(fin.project_cost.project_cost_inr),
         )
     elif structure is not None and structure.project_cost_inr is not None:
         project_cost_pv = pv_calc(
             "Project cost",
             format_inr(structure.project_cost_inr),
             inputs=("build_plan cost lines",),
+            raw=str(structure.project_cost_inr),
         )
     elif capacity is not None and capacity.feasible_project_cost_inr is not None:
         project_cost_pv = pv_config(
@@ -756,12 +900,18 @@ def build_financial_section(
             "Required promoter margin",
             format_inr(req_margin),
             rationale=DECLARED_CONFIG_NOTE,
+            raw=str(req_margin),
         )
         if req_margin is not None
         else pv_missing("Required promoter margin", reason=GapReason.NO_EVIDENCE)
     )
     indicated_loan_pv = (
-        pv_config("Indicated loan", format_inr(indicated_loan), rationale=DECLARED_CONFIG_NOTE)
+        pv_config(
+            "Indicated loan",
+            format_inr(indicated_loan),
+            rationale=DECLARED_CONFIG_NOTE,
+            raw=str(indicated_loan),
+        )
         if indicated_loan is not None
         else pv_missing("Indicated loan", reason=GapReason.NO_EVIDENCE)
     )
@@ -804,6 +954,7 @@ def build_financial_section(
             "Feasible project cost (capacity screen)",
             format_inr(calculated_capacity.feasible_project_cost_inr),
             rationale=DECLARED_CONFIG_NOTE,
+            raw=str(calculated_capacity.feasible_project_cost_inr),
         )
         if calculated_capacity is not None
         else pv_missing("Feasible project cost (capacity screen)", reason=GapReason.NO_EVIDENCE)
@@ -813,6 +964,7 @@ def build_financial_section(
             "Required promoter margin (capacity screen)",
             format_inr(calculated_capacity.required_promoter_margin_inr),
             rationale=DECLARED_CONFIG_NOTE,
+            raw=str(calculated_capacity.required_promoter_margin_inr),
         )
         if calculated_capacity is not None
         else pv_missing("Required promoter margin (capacity screen)", reason=GapReason.NO_EVIDENCE)
@@ -822,6 +974,7 @@ def build_financial_section(
             "Indicated loan (capacity screen)",
             format_inr(calculated_capacity.indicated_loan_inr),
             rationale=DECLARED_CONFIG_NOTE,
+            raw=str(calculated_capacity.indicated_loan_inr),
         )
         if calculated_capacity is not None
         else pv_missing("Indicated loan (capacity screen)", reason=GapReason.NO_EVIDENCE)
@@ -864,6 +1017,15 @@ def build_financial_section(
         )
     else:
         emi_pv = pv_missing("Monthly EMI", reason=GapReason.INPUT_REQUIRED)
+
+    # Repayment schedule — only for the real, business-based debt schedule
+    # (`fin.debt`); the capacity screen's loan terms are a rougher screen
+    # that never carried a full period-by-period schedule to begin with.
+    repayment_schedule = (
+        build_quarterly_repayment_schedule(fin.debt)
+        if fin is not None and fin.debt is not None
+        else ()
+    )
 
     # DSCR / cash flow / break-even
     dscr = fin.dscr if fin is not None else None
@@ -1017,6 +1179,7 @@ def build_financial_section(
         tenure=tenure_pv,
         moratorium=moratorium_pv,
         monthly_emi=emi_pv,
+        repayment_schedule=repayment_schedule,
         average_annual_dscr=avg_dscr_pv,
         first_post_moratorium_dscr=first_dscr_pv,
         minimum_cash_balance=min_cash_pv,

@@ -26,7 +26,13 @@ from vyaparsarathi.dpr.fingerprint import (
     present_artifacts,
     report_id_for,
 )
-from vyaparsarathi.dpr.format import humanise_token
+from vyaparsarathi.dpr.format import (
+    format_inr,
+    format_months,
+    format_pct_value,
+    format_ratio_pct,
+    humanise_token,
+)
 from vyaparsarathi.dpr.provenance import (
     GapReason,
     ProvenancedValue,
@@ -53,7 +59,9 @@ from vyaparsarathi.dpr.report_models import (
     SlotHistoryLine,
 )
 from vyaparsarathi.dpr.sections import (
+    build_distribution_channels_section,
     build_financial_section,
+    build_market_price_section,
     build_market_section,
     build_opportunity_section,
     build_profile_section,
@@ -62,6 +70,7 @@ from vyaparsarathi.dpr.sections import (
     build_scheme_knowledge_section,
 )
 from vyaparsarathi.dpr.slots import slot_value
+from vyaparsarathi.utils.time import to_ist
 
 
 def _renderer_tag() -> str:
@@ -88,8 +97,10 @@ def assemble_report(session: ConversationSession, *, generated_at: datetime) -> 
 
     profile = build_profile_section(session, arts)
     market = build_market_section(session, arts)
+    market_price = build_market_price_section(session, arts)
     opportunity = build_opportunity_section(session, arts)
     project_plan = build_project_plan_section(session, arts)
+    distribution_channels = build_distribution_channels_section(session, arts)
     financial = build_financial_section(session, arts)
     scheme_knowledge = build_scheme_knowledge_section(session, arts)
     risks_swot = build_risks_swot_section(session, arts)
@@ -97,8 +108,10 @@ def assemble_report(session: ConversationSession, *, generated_at: datetime) -> 
     body_sections: tuple[ReportSection, ...] = (
         profile,
         market,
+        market_price,
         opportunity,
         project_plan,
+        distribution_channels,
         financial,
         scheme_knowledge,
         risks_swot,
@@ -118,7 +131,7 @@ def assemble_report(session: ConversationSession, *, generated_at: datetime) -> 
             session, SlotName.LOCATION_TEXT, label="Location", fmt=lambda v: str(v)
         ),
         report_id=report_id,
-        generated_on=generated_at.strftime("%d %B %Y, %H:%M UTC"),
+        generated_on=to_ist(generated_at).strftime("%d %B %Y, %H:%M IST"),
         session_id=session.session_id,
         report_kind=REPORT_KIND,
         disclaimer=DISCLAIMER,
@@ -155,8 +168,10 @@ def assemble_report(session: ConversationSession, *, generated_at: datetime) -> 
         executive_summary=executive_summary,
         profile=profile,
         market=market,
+        market_price=market_price,
         opportunity=opportunity,
         project_plan=project_plan,
+        distribution_channels=distribution_channels,
         financial=financial,
         scheme_knowledge=scheme_knowledge,
         risks_swot=risks_swot,
@@ -359,7 +374,9 @@ def _build_executive_summary(
     if rec is not None and rec.verdict.value == "pivot" and rec.recommended_pivot is not None:
         next_actions.append(
             f"Seriously consider the alternative that scored materially higher: "
-            f"{rec.recommended_pivot.value.replace('_', ' ')}."
+            f"{rec.recommended_pivot.value.replace('_', ' ')} — but verify trade experience "
+            "and licensing/compliance requirements locally before committing; this phase "
+            "does not check either."
         )
     if rec is not None and rec.verdict.value == "adjust":
         next_actions.append(
@@ -396,6 +413,43 @@ _ORIGIN_BUCKET = {
     ValueOrigin.SOURCED: "source_facts",
     ValueOrigin.DECLARED_CONFIG: "declared_configuration",
 }
+
+# A closed lookup translating the finance engine's `FinancialInput.label`
+# tokens into plain phrases; an unrecognised future label falls back to
+# `humanise_token()` rather than leaking the raw snake_case token.
+_FIN_LABEL_PLAIN = {
+    "project_cost_inr": "Project cost",
+    "monthly_revenue_inr": "Expected monthly revenue",
+    "cogs_pct": "Cost of goods (% of revenue)",
+    "fixed_opex_inr": "Monthly fixed operating cost",
+    "promoter_cash_contribution_inr": "Promoter cash contribution",
+    "loan_principal_inr": "Loan principal",
+    "loan_interest_rate_pct": "Loan interest rate",
+    "loan_tenure_months": "Loan tenure",
+    "loan_moratorium_months": "Loan moratorium",
+}
+
+
+def _format_finance_input_value(value: object, unit: str) -> str:
+    """`FinancialInput.value` + `.unit` -> a plain display string, routed
+    through the same `format.py` formatters every other figure in the
+    report uses -- instead of the raw `f"{value} {unit}"` (e.g.
+    `"500000 inr"`)."""
+    if unit in ("inr", "inr_per_unit"):
+        return format_inr(value)
+    if unit == "inr_per_month":
+        return f"{format_inr(value)}/month"
+    if unit == "percent_per_annum":
+        return f"{format_pct_value(value)} per annum"
+    if unit == "ratio":
+        return format_ratio_pct(value)
+    if unit == "months":
+        return format_months(value)
+    if unit == "days":
+        return f"{value} day(s)"
+    if unit == "units_per_month":
+        return f"{value} units/month"
+    return f"{value} {unit}"
 
 
 def _build_assumptions_section(
@@ -442,11 +496,12 @@ def _build_assumptions_section(
             if key in seen:
                 continue
             seen.add(key)
-            detail = f"{fi.value} {fi.unit.value}"
+            detail = _format_finance_input_value(fi.value, fi.unit.value)
             if fi.kind.value == "assumed" and fi.rationale:
                 detail += f" — {fi.rationale}"
+            label = _FIN_LABEL_PLAIN.get(fi.label, humanise_token(fi.label))
             buckets[bucket].append(
-                LabeledItem(label=f"finance: {fi.label}", detail=detail, origin=fi.kind.value)
+                LabeledItem(label=label, detail=detail, origin=fi.kind.value)
             )
 
     confidence_notes = [NO_LLM_NOTE, CONFIDENCE_SEPARATION_NOTE]

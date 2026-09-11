@@ -30,6 +30,10 @@ _ENGINE_CALLABLES: dict[StepId, tuple[str, str]] = {
     StepId.ANALYZE: ("vyaparsarathi.market.classifier", "analyze_competitors"),
     StepId.METRICS: ("vyaparsarathi.market.metrics", "compute_competition_metrics"),
     StepId.DEMAND_SIGNALS: ("vyaparsarathi.market.demand", "compute_demand_signals"),
+    StepId.MARKET_PRICE_SIGNAL: (
+        "vyaparsarathi.market.price_signal",
+        "compute_market_price_signal",
+    ),
     StepId.ASSESS_MARKET: ("vyaparsarathi.market.assessment", "assess_market"),
     StepId.OPPORTUNITY: ("vyaparsarathi.market.opportunity", "score_opportunities"),
     StepId.BIND_PLAN: ("vyaparsarathi.knowledge.plan_binding", "bind_sourced_inputs"),
@@ -149,7 +153,8 @@ def _resolve_proposed_artifact() -> StepArtifact:
 
 
 # Every step reachable from RESOLVE_PROPOSED without ever going through
-# DISCOVER (DISCOVER is only `optional_steps` for FINANCE_KNOWLEDGE) — these
+# DISCOVER (DISCOVER is only `optional_steps` for FINANCE_KNOWLEDGE and, as
+# of MARKET_PRICE_EVIDENCE, the same optional relationship) — these
 # must keep completing normally even while DISCOVER has hard-failed, so the
 # "hard failure" tests below pre-complete this whole branch with trivial
 # artifacts (planner.py never reads their payload contents, only presence)
@@ -163,6 +168,8 @@ _INDEPENDENT_FINANCE_BRANCH = (
     StepId.STRUCTURE_FINANCE,
     StepId.ASSESS_FINANCE,
     StepId.FINANCIAL_FIT,
+    StepId.MARKET_PRICE_EVIDENCE,
+    StepId.MARKET_PRICE_SIGNAL,
 )
 
 

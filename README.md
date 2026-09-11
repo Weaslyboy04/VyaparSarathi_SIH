@@ -333,7 +333,7 @@ python scripts/generate_dpr.py --session-id <id> --pdf out/r.pdf --json out/r.js
 
 `DprService.generate(...)` writes PDF + JSON side by side and refuses to
 overwrite an existing file unless `--overwrite`. The bundled demo produces
-report `DPR-9DF3C947297C75A3` — recommendation **Pivot → dairy** (a better
+report `DPR-5CFFC02EE224B5E4` — recommendation **Pivot → dairy** (a better
 local alternative than the proposed pulses grocery), financial status
 *Feasible with stretch*, one sourced scheme parameter plus honest "no
 evidence" for interest rate / tenure / moratorium, 19 disclosed evidence gaps.

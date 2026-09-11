@@ -26,7 +26,9 @@ from vyaparsarathi.market.demand_models import DemandSignalsResult
 from vyaparsarathi.market.metrics_models import CompetitionMetricsResult
 from vyaparsarathi.market.models import CompetitorAnalysisResult, ProposedBusiness
 from vyaparsarathi.market.opportunity_models import OpportunityAnalysisResult
+from vyaparsarathi.market.price_models import MarketPriceSignalResult
 from vyaparsarathi.models.finance import FinancialPlanInput
+from vyaparsarathi.models.market_price import MarketPriceEvidence
 from vyaparsarathi.models.parameters import FinanceKnowledgeEvidence
 from vyaparsarathi.models.results import DiscoveryResult
 
@@ -38,6 +40,8 @@ class ArtifactSet:
     analysis: CompetitorAnalysisResult | None
     metrics: CompetitionMetricsResult | None
     demand: DemandSignalsResult | None
+    market_price_evidence: MarketPriceEvidence | None
+    market_price: MarketPriceSignalResult | None
     market: MarketAssessmentResult | None
     opportunity: OpportunityAnalysisResult | None
     knowledge: FinanceKnowledgeEvidence | None
@@ -69,6 +73,10 @@ def load_artifacts(session: ConversationSession) -> ArtifactSet:
         analysis=_load(session, StepId.ANALYZE, CompetitorAnalysisResult),
         metrics=_load(session, StepId.METRICS, CompetitionMetricsResult),
         demand=_load(session, StepId.DEMAND_SIGNALS, DemandSignalsResult),
+        market_price_evidence=_load(
+            session, StepId.MARKET_PRICE_EVIDENCE, MarketPriceEvidence
+        ),
+        market_price=_load(session, StepId.MARKET_PRICE_SIGNAL, MarketPriceSignalResult),
         market=_load(session, StepId.ASSESS_MARKET, MarketAssessmentResult),
         opportunity=_load(session, StepId.OPPORTUNITY, OpportunityAnalysisResult),
         knowledge=_load(session, StepId.FINANCE_KNOWLEDGE, FinanceKnowledgeEvidence),

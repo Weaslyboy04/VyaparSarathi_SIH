@@ -159,6 +159,21 @@ def test_worked_example_b_category_change_survives_demand_evidence() -> None:
     assert len(dropped) == len(StepId) - 2
 
 
+def test_market_price_evidence_fingerprint_is_subtype_sensitive() -> None:
+    """A correction from a bare category to a more specific subtype (e.g.
+    "grocery" -> "pulses grocery") must change MARKET_PRICE_EVIDENCE's
+    fingerprint even when `resolved_category` stays the same — otherwise a
+    cached artifact queried for the wrong (or no) commodity would silently
+    survive the correction (CLAUDE.md §30)."""
+    session = _seeded_session()
+    bare = compute_fingerprints(session)[StepId.MARKET_PRICE_EVIDENCE]
+
+    with_subtype = session.model_copy(update={"resolved_subtypes": ("pulses",)})
+    specific = compute_fingerprints(with_subtype)[StepId.MARKET_PRICE_EVIDENCE]
+
+    assert bare != specific
+
+
 def test_fingerprints_exclude_output_timestamps() -> None:
     """Fingerprints are pure functions of session state; calling twice with
     an unchanged session yields byte-identical fingerprints (the anti-drift

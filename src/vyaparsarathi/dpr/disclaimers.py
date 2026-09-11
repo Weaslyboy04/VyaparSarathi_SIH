@@ -58,6 +58,17 @@ PROJECT_PLAN_NOTE = (
     "detail is gathered separately during scheme appraisal."
 )
 
+DISTRIBUTION_CHANNELS_NOTE = (
+    "This is generic guidance for businesses of this category — never a specific supplier, "
+    "buyer, or channel discovered at this location. Verify locally before relying on it."
+)
+
+WHOLESALE_NOT_RETAIL_NOTE = (
+    "These are wholesale (mandi) prices, in Rupees per quintal — what farmers/traders "
+    "received, not a suggested retail selling price for a shop. Retail prices, margins, "
+    "and local competition are separate decisions this figure does not make for you."
+)
+
 NO_LLM_NOTE = (
     "This report was assembled and rendered deterministically from stored structured "
     "results. No language model drafted, summarised, or rewrote any section."
@@ -122,10 +133,12 @@ __all__ = [
     "CONFIDENCE_SEPARATION_NOTE",
     "DECLARED_CONFIG_NOTE",
     "DISCLAIMER",
+    "DISTRIBUTION_CHANNELS_NOTE",
     "FINANCIAL_INCOMPLETE_NOTE",
     "GLOSSARY",
     "MARKET_COMPLETENESS_NOTE",
     "NO_LLM_NOTE",
+    "WHOLESALE_NOT_RETAIL_NOTE",
     "PROFILE_UNVERIFIED_NOTE",
     "PROJECT_PLAN_NOTE",
     "REPORT_KIND",

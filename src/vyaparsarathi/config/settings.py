@@ -37,6 +37,20 @@ class Settings(BaseSettings):
     nominatim_url: str = "https://nominatim.openstreetmap.org"
     nominatim_min_interval_s: float = 1.0
 
+    # --- AGMARKNET (data.gov.in wholesale mandi price signal) ---
+    # A real, live, externally-hosted government dataset (CLAUDE.md §6's
+    # "government / open-data" tier), NOT a business-discovery source. `None`
+    # api_key means "not configured" -- a shared/demo key is never silently
+    # substituted (CLAUDE.md §24, §30).
+    agmarknet_base_url: str = (
+        "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
+    )
+    agmarknet_api_key: SecretStr | None = None
+    # A subtype/category can imply more commodities than are worth querying
+    # per session; extras are recorded as skipped, never silently dropped.
+    agmarknet_max_commodities_per_query: int = 3
+    agmarknet_result_limit: int = 50
+
     # --- Shared HTTP ---
     http_timeout_s: float = 60.0
     http_max_retries: int = 3
@@ -146,7 +160,9 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr | None = None
     telegram_api_base_url: str = "https://api.telegram.org"
 
-    @field_validator("llm_base_url", "whatsapp_api_base_url", "telegram_api_base_url")
+    @field_validator(
+        "llm_base_url", "whatsapp_api_base_url", "telegram_api_base_url", "agmarknet_base_url"
+    )
     @classmethod
     def _no_credential_in_url(cls, v: str) -> str:
         """`utils/http.py` logs the request URL at WARNING and interpolates

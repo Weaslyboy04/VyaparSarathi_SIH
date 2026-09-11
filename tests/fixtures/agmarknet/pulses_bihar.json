@@ -1,0 +1,44 @@
+{
+  "total": 3,
+  "count": 3,
+  "limit": 10,
+  "offset": 0,
+  "records": [
+    {
+      "state": "Bihar",
+      "district": "Vaishali",
+      "market": "Hajipur",
+      "commodity": "Arhar (Tur/Red Gram)(Whole)",
+      "variety": "Other",
+      "grade": "FAQ",
+      "arrival_date": "08/09/2026",
+      "min_price": "9200",
+      "max_price": "9600",
+      "modal_price": "9400"
+    },
+    {
+      "state": "Bihar",
+      "district": "Vaishali",
+      "market": "Mahnar",
+      "commodity": "Arhar (Tur/Red Gram)(Whole)",
+      "variety": "Other",
+      "grade": "FAQ",
+      "arrival_date": "07/09/2026",
+      "min_price": "9000",
+      "max_price": "9500",
+      "modal_price": "9300"
+    },
+    {
+      "state": "Bihar",
+      "district": "Vaishali",
+      "market": "Hajipur",
+      "commodity": "Gram Raw(Chholia)",
+      "variety": "Other",
+      "grade": "FAQ",
+      "arrival_date": "08/09/2026",
+      "min_price": "5400",
+      "max_price": "5800",
+      "modal_price": "5600"
+    }
+  ]
+}
