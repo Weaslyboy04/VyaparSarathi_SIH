@@ -105,6 +105,70 @@ PROPOSED_ALIASES: dict[str, tuple[C, tuple[str, ...]]] = {
     "garage": (C.AUTOMOBILE_REPAIR, ()),
     "auto repair": (C.AUTOMOBILE_REPAIR, ()),
     "puncture": (C.AUTOMOBILE_REPAIR, ()),
+    "sports goods": (C.SPORTS_GOODS, ()),
+    "sporting goods": (C.SPORTS_GOODS, ()),
+    "sports equipment": (C.SPORTS_GOODS, ()),
+    "sports shop": (C.SPORTS_GOODS, ()),
+    "cricket kit": (C.SPORTS_GOODS, ("cricket",)),
+    "gym equipment": (C.SPORTS_GOODS, ("gym equipment",)),
+    "gym": (C.GYM_FITNESS, ()),
+    "fitness center": (C.GYM_FITNESS, ()),
+    "fitness centre": (C.GYM_FITNESS, ()),
+    "gymnasium": (C.GYM_FITNESS, ()),
+    "yoga center": (C.GYM_FITNESS, ()),
+    "yoga centre": (C.GYM_FITNESS, ()),
+    "akhada": (C.GYM_FITNESS, ()),
+    "xerox": (C.PRINTING_XEROX, ()),
+    "photocopy": (C.PRINTING_XEROX, ()),
+    "printing": (C.PRINTING_XEROX, ()),
+    "print shop": (C.PRINTING_XEROX, ()),
+    "flex printing": (C.PRINTING_XEROX, ()),
+    "computer center": (C.COMPUTER_SERVICES, ()),
+    "computer centre": (C.COMPUTER_SERVICES, ()),
+    "cyber cafe": (C.COMPUTER_SERVICES, ()),
+    "internet cafe": (C.COMPUTER_SERVICES, ()),
+    "computer repair": (C.COMPUTER_SERVICES, ()),
+    "laptop repair": (C.COMPUTER_SERVICES, ()),
+    "welding": (C.WELDING_FABRICATION, ()),
+    "fabrication": (C.WELDING_FABRICATION, ()),
+    "welder": (C.WELDING_FABRICATION, ()),
+    "steel fabrication": (C.WELDING_FABRICATION, ()),
+    "catering": (C.CATERING, ()),
+    "caterer": (C.CATERING, ()),
+    "tiffin service": (C.CATERING, ()),
+    "tiffin": (C.CATERING, ()),
+    "mess": (C.CATERING, ()),
+    "tent house": (C.EVENT_SERVICES, ()),
+    "event decor": (C.EVENT_SERVICES, ()),
+    "decoration": (C.EVENT_SERVICES, ()),
+    "wedding decor": (C.EVENT_SERVICES, ()),
+    "banquet": (C.EVENT_SERVICES, ()),
+    "lpg agency": (C.UTILITY_AGENCY, ()),
+    "gas agency": (C.UTILITY_AGENCY, ()),
+    "recharge shop": (C.UTILITY_AGENCY, ()),
+    "mobile recharge": (C.UTILITY_AGENCY, ()),
+    "banking correspondent": (C.UTILITY_AGENCY, ()),
+    "bc agent": (C.UTILITY_AGENCY, ()),
+    "csc center": (C.UTILITY_AGENCY, ()),
+    "csc centre": (C.UTILITY_AGENCY, ()),
+    "common service center": (C.UTILITY_AGENCY, ()),
+    "tuition": (C.EDUCATION_SERVICES, ()),
+    "coaching center": (C.EDUCATION_SERVICES, ()),
+    "coaching centre": (C.EDUCATION_SERVICES, ()),
+    "driving school": (C.EDUCATION_SERVICES, ()),
+    "training institute": (C.EDUCATION_SERVICES, ()),
+    "laundry": (C.LAUNDRY, ()),
+    "dry cleaning": (C.LAUNDRY, ()),
+    "dry cleaner": (C.LAUNDRY, ()),
+    "cycle shop": (C.CYCLE_REPAIR, ()),
+    "bicycle shop": (C.CYCLE_REPAIR, ()),
+    "cycle repair": (C.CYCLE_REPAIR, ()),
+    "bicycle repair": (C.CYCLE_REPAIR, ()),
+    "footwear": (C.FOOTWEAR, ()),
+    "shoe shop": (C.FOOTWEAR, ()),
+    "shoes": (C.FOOTWEAR, ()),
+    "chappal": (C.FOOTWEAR, ()),
+    "sandal shop": (C.FOOTWEAR, ()),
 }
 
 # Generic words dropped before looking for leftover subtype tokens.
@@ -117,16 +181,12 @@ def _clean_subtypes(tokens: Iterable[str]) -> list[str]:
     return sorted({t.strip().lower() for t in tokens if t and t.strip()})
 
 
-def _best_fuzzy_category(
-    text: str, cfg: ProposedBusinessConfig
-) -> tuple[C, tuple[str, ...]] | None:
-    """The single category `text` fuzzy-matches, if — and only if — it beats
-    every other candidate category by `cfg.fuzzy_match_margin` and clears
-    `cfg.fuzzy_match_threshold`. Scores every alias key AND every internal
-    category name, then takes the BEST score per resulting category (an
-    alias and its own category name are the same candidate, never double
-    counted as "competing"). Returns `None` — never a guess — the moment two
-    distinct categories are both plausible."""
+def _rank_categories(text: str) -> list[tuple[C, float, tuple[str, ...]]]:
+    """Every internal category (excluding `UNKNOWN`/`OTHER_TRADE`, neither of
+    which is a real thing a user described), scored against `text` by the
+    BEST match of its alias keys or its own category name, sorted
+    descending. Shared by the strict auto-resolve pass and the looser
+    suggestion pass below."""
     best_per_category: dict[C, tuple[float, tuple[str, ...]]] = {}
     for key, (cat, implied) in PROPOSED_ALIASES.items():
         score = fuzz.token_sort_ratio(text, key)
@@ -134,24 +194,50 @@ def _best_fuzzy_category(
         if current is None or score > current[0]:
             best_per_category[cat] = (score, implied)
     for cat in C:
-        if cat is C.UNKNOWN:
+        if cat in (C.UNKNOWN, C.OTHER_TRADE):
             continue
         score = fuzz.token_sort_ratio(text, cat.value)
         current = best_per_category.get(cat)
         if current is None or score > current[0]:
             best_per_category[cat] = (score, ())
+    return sorted(
+        ((cat, score, subtypes) for cat, (score, subtypes) in best_per_category.items()),
+        key=lambda t: t[1],
+        reverse=True,
+    )
 
-    if not best_per_category:  # pragma: no cover — PROPOSED_ALIASES is never empty
+
+def _best_fuzzy_category(
+    text: str, cfg: ProposedBusinessConfig
+) -> tuple[C, tuple[str, ...]] | None:
+    """The single category `text` fuzzy-matches, if — and only if — it beats
+    every other candidate category by `cfg.fuzzy_match_margin` and clears
+    `cfg.fuzzy_match_threshold`. Returns `None` — never a guess — the moment
+    two distinct categories are both plausible."""
+    ranked = _rank_categories(text)
+    if not ranked:  # pragma: no cover — PROPOSED_ALIASES is never empty
         return None
-    ranked = sorted(best_per_category.items(), key=lambda kv: kv[1][0], reverse=True)
-    top_cat, (top_score, top_subtypes) = ranked[0]
+    top_cat, top_score, top_subtypes = ranked[0]
     if top_score < cfg.fuzzy_match_threshold:
         return None
     if len(ranked) > 1:
-        runner_up_score = ranked[1][1][0]
+        runner_up_score = ranked[1][1]
         if top_score - runner_up_score < cfg.fuzzy_match_margin:
             return None
     return top_cat, top_subtypes
+
+
+def _suggest_fuzzy_categories(text: str, cfg: ProposedBusinessConfig) -> list[C]:
+    """Best-effort category suggestions for a CLARIFYING question — never
+    for auto-resolution. Looser than `_best_fuzzy_category`: takes the top
+    `cfg.suggestion_top_n` distinct categories clearing only
+    `cfg.suggestion_threshold`, so the entrepreneur has something concrete
+    to pick from instead of a flat "unknown" even when no single category
+    was clearly ahead."""
+    ranked = _rank_categories(text)
+    return [cat for cat, score, _ in ranked if score >= cfg.suggestion_threshold][
+        : cfg.suggestion_top_n
+    ]
 
 
 def proposed_from_category(
@@ -248,12 +334,48 @@ def resolve_proposed_business(
                 "proposed %r -> %s subtypes=%s (fuzzy match)", raw, category.value, pb.subtypes
             )
             return pb
-        note = "Could not map the proposed business to any known category."
-    else:
-        note = (
-            "Proposed business mapped to multiple categories "
-            f"({', '.join(sorted(c.value for c in matched_categories))}); needs clarification."
+
+        # No confident auto-resolve. Look for weaker-but-plausible
+        # candidates to offer as a clarifying question BEFORE giving up —
+        # never silently drop the business (CLAUDE.md: "ask more" beats
+        # "insufficient evidence").
+        suggestions = _suggest_fuzzy_categories(leftover, cfg) if leftover else []
+        if suggestions:
+            note = (
+                "Could not confidently map the proposed business to one category; "
+                f"closest possibilities: {', '.join(c.value for c in suggestions)}."
+            )
+            logger.info("proposed %r -> ambiguous, suggesting %s", raw, suggestions)
+            return ProposedBusiness(
+                category=C.UNKNOWN,
+                subtypes=_clean_subtypes(subtypes),
+                raw_text=raw,
+                resolved=False,
+                note=note,
+                candidate_categories=[c.value for c in suggestions],
+            )
+
+        # Genuinely novel text, no suggestion clears even the loose bar —
+        # still enter scoring/discovery as a generic trade rather than
+        # vanishing from the report.
+        pb = ProposedBusiness(
+            category=C.OTHER_TRADE,
+            subtypes=_clean_subtypes(subtypes),
+            raw_text=raw,
+            resolved=True,
+            note=(
+                "Could not map this to a specific known category; treated as a "
+                "generic trade/service — market and capital comparisons for it are "
+                "less detailed than for a named category."
+            ),
         )
+        logger.info("proposed %r -> other_trade (no match, no suggestion)", raw)
+        return pb
+
+    note = (
+        "Proposed business mapped to multiple categories "
+        f"({', '.join(sorted(c.value for c in matched_categories))}); needs clarification."
+    )
     logger.info("proposed %r -> unknown (%s)", raw, note)
     return ProposedBusiness(
         category=C.UNKNOWN,
@@ -261,4 +383,5 @@ def resolve_proposed_business(
         raw_text=raw,
         resolved=False,
         note=note,
+        candidate_categories=sorted(c.value for c in matched_categories),
     )

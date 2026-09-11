@@ -73,6 +73,21 @@ _SCHEME_PARAMS = (
 )
 _STATUTORY_PARAMS = (ParameterName.LICENCE_FEE_INR, ParameterName.SECURITY_DEPOSIT_MONTHS)
 
+# Scheme parameters that, even with no independently-cited source, are
+# already answered elsewhere in this report via the SIH DECLARED_CONFIG
+# financing structure (used to compute the EMI/DSCR in the Financial
+# assessment section). An unresolved value for one of these must read as
+# "not independently verified" rather than a flat "no evidence" — the
+# report already states a number for it, just not a scheme-cited one.
+_DECLARED_CONFIG_BACKED_PARAMS = frozenset(
+    {
+        ParameterName.INTEREST_RATE_PCT,
+        ParameterName.LOAN_TENURE_MONTHS,
+        ParameterName.MORATORIUM_MONTHS,
+        ParameterName.PROMOTER_MARGIN_PCT,
+    }
+)
+
 
 # --- shared helpers ------------------------------------------------------
 
@@ -281,7 +296,23 @@ def build_market_section(
 
     metrics = arts.metrics
     analysis = arts.analysis
-    if metrics is not None:
+    # A skipped competitor analysis (category never resolved, so nothing
+    # could be classified against it) must never render as a bare "0" —
+    # that reads as "we checked and found none," not "we couldn't check."
+    _not_evaluated_note = (
+        "Competitor discovery was skipped because the business category "
+        "could not be classified — this is not a finding of zero competitors."
+    )
+    if metrics is not None and metrics.status.value == "unknown_category":
+        direct_pv = pv_missing(
+            "Direct competitors", reason=GapReason.NO_EVIDENCE, note=_not_evaluated_note
+        )
+        adjacent_pv = pv_missing(
+            "Adjacent competitors", reason=GapReason.NO_EVIDENCE, note=_not_evaluated_note
+        )
+        nearest_pv = pv_missing("Nearest competitor", reason=GapReason.NO_EVIDENCE)
+        signal_pv = pv_missing("Competition signal", reason=GapReason.NO_EVIDENCE)
+    elif metrics is not None:
         direct_pv = pv_calc(
             "Direct competitors", str(metrics.direct_count), inputs=("analyze", "discover")
         )
@@ -303,6 +334,15 @@ def build_market_section(
             inputs=("metrics.signal_basis",),
             note=metrics.signal_reason,
         )
+    elif analysis is not None and analysis.status.value == "unknown_category":
+        direct_pv = pv_missing(
+            "Direct competitors", reason=GapReason.NO_EVIDENCE, note=_not_evaluated_note
+        )
+        adjacent_pv = pv_missing(
+            "Adjacent competitors", reason=GapReason.NO_EVIDENCE, note=_not_evaluated_note
+        )
+        nearest_pv = pv_missing("Nearest competitor", reason=GapReason.NO_EVIDENCE)
+        signal_pv = pv_missing("Competition signal", reason=GapReason.NO_EVIDENCE)
     elif analysis is not None:
         direct_pv = pv_calc(
             "Direct competitors", str(len(analysis.direct_competitors)), inputs=("analyze",)
@@ -335,6 +375,23 @@ def build_market_section(
         if cp.households is not None:
             demand_items.append(
                 LabeledItem(label="Households", detail=f"{cp.households:,}", origin="sourced")
+            )
+            radius_slot = session.slot(SlotName.RADIUS_M)
+            radius_km = (
+                f"{float(as_decimal(radius_slot.value)) / 1000:.0f}"
+                if radius_slot.value is not None
+                else "a few"
+            )
+            demand_items.append(
+                LabeledItem(
+                    label="Market reach, in plain words",
+                    detail=(
+                        f"Roughly {cp.households:,} households live within {radius_km} km of "
+                        "your location — the customers you can realistically reach on foot or "
+                        "a short trip."
+                    ),
+                    origin="calculated",
+                )
             )
         demand_items.append(
             LabeledItem(
@@ -460,6 +517,7 @@ def build_opportunity_section(
                 contribution=contribution,
                 weight_pct=f"{comp.nominal_weight:.0%}",
                 reason=comp.reason,
+                villager_reason=comp.villager_reason,
             )
         )
 
@@ -478,6 +536,7 @@ def build_opportunity_section(
                 market_label=humanise_token(cand.market_label.value),
                 rank=cand.rank,
                 reasons=tuple(cand.reasons[:3]),
+                villager_reasons=tuple(cand.villager_reasons[:3]),
                 capital_fit=humanise_token(cand.capital_fit.value),
             )
         )
@@ -538,6 +597,18 @@ def build_project_plan_section(
         missing_reason=GapReason.NO_EVIDENCE,
     )
 
+    cogs_slot = session.slot(SlotName.COGS_PCT)
+    margin_note = ""
+    if cogs_slot.value is not None:
+        cogs_pct = float(as_decimal(cogs_slot.value)) * 100
+        margin_pct = 100 - cogs_pct
+        margin_note = (
+            f"In plain words: if {format_ratio_pct(as_decimal(cogs_slot.value))} of every rupee "
+            f"of sales goes to buying stock, roughly {margin_pct:.0f}% is left as gross margin "
+            "before your fixed costs and loan repayment — this is not a price recommendation, "
+            "just what your own stated numbers imply."
+        )
+
     return ProjectPlanSection(
         title="Project and operating plan",
         status=SectionStatus.RENDERED,
@@ -568,6 +639,7 @@ def build_project_plan_section(
             fmt=lambda v: format_inr_words(as_decimal(v)),
         ),
         note=PROJECT_PLAN_NOTE,
+        margin_note=margin_note,
     )
 
 
@@ -653,9 +725,15 @@ def build_financial_section(
     else:
         project_cost_pv = pv_missing("Project cost", reason=GapReason.INPUT_REQUIRED)
 
+    # This is the entrepreneur's STATED available liquid cash — a ceiling on
+    # what they could put in, never a record of what this particular
+    # business's (possibly much smaller) project cost actually draws on. The
+    # label says so explicitly; "capital_remaining_after_margin" below says
+    # how much of it is left over once the real requirement is known.
+    available_cash_input = plan.financing.promoter_cash_contribution if plan is not None else None
     promoter_contribution_pv = _fin_input_pv(
-        plan.financing.promoter_cash_contribution if plan is not None else None,
-        "Promoter cash contribution",
+        available_cash_input,
+        "Available promoter cash (stated)",
         lambda v: format_inr(v),
     )
 
@@ -700,6 +778,61 @@ def build_financial_section(
         pv_config("Financing structure", scheme_name, rationale=DECLARED_CONFIG_NOTE)
         if scheme_name
         else pv_missing("Financing structure", reason=GapReason.NO_EVIDENCE)
+    )
+
+    capital_remaining_pv = (
+        pv_calc(
+            "Capital remaining after margin",
+            format_inr(available_cash_input.value - req_margin),
+            inputs=("available promoter cash (stated)", "required promoter margin"),
+        )
+        if available_cash_input is not None and req_margin is not None
+        else pv_missing("Capital remaining after margin", reason=GapReason.NO_EVIDENCE)
+    )
+
+    # Scheme capacity screen — what the declared 10%/90% split says the
+    # stated Available Margin Capital could support on its own, independent
+    # of whether the actual business-based structuring above succeeded.
+    # Rendered whenever `capacity` calculated something, never only as a
+    # fallback for a missing `structure` (CLAUDE.md §12's capacity-screen vs
+    # viability-verdict distinction; see finance/capacity.py).
+    calculated_capacity = (
+        capacity if capacity is not None and capacity.status.value == "calculated" else None
+    )
+    capacity_project_cost_pv = (
+        pv_config(
+            "Feasible project cost (capacity screen)",
+            format_inr(calculated_capacity.feasible_project_cost_inr),
+            rationale=DECLARED_CONFIG_NOTE,
+        )
+        if calculated_capacity is not None
+        else pv_missing("Feasible project cost (capacity screen)", reason=GapReason.NO_EVIDENCE)
+    )
+    capacity_required_margin_pv = (
+        pv_config(
+            "Required promoter margin (capacity screen)",
+            format_inr(calculated_capacity.required_promoter_margin_inr),
+            rationale=DECLARED_CONFIG_NOTE,
+        )
+        if calculated_capacity is not None
+        else pv_missing("Required promoter margin (capacity screen)", reason=GapReason.NO_EVIDENCE)
+    )
+    capacity_indicated_loan_pv = (
+        pv_config(
+            "Indicated loan (capacity screen)",
+            format_inr(calculated_capacity.indicated_loan_inr),
+            rationale=DECLARED_CONFIG_NOTE,
+        )
+        if calculated_capacity is not None
+        else pv_missing("Indicated loan (capacity screen)", reason=GapReason.NO_EVIDENCE)
+    )
+    capacity_note = (
+        f"This is what {calculated_capacity.scheme_name}'s declared financing split says your "
+        "stated Available Margin Capital could support — a capacity screen, not a "
+        "recommendation or a viability verdict. Your business's actual requirement is shown "
+        "above."
+        if calculated_capacity is not None
+        else ""
     )
 
     # loan terms
@@ -797,6 +930,16 @@ def build_financial_section(
 
     stress: list[StressLine] = []
     for sr in fin.stress_results if fin is not None else []:
+        # An optional scenario nobody supplied data for (e.g. "lean season"
+        # with no seasonality given) is NOT the same kind of gap as a core
+        # figure that's genuinely missing — use NOT_APPLICABLE so it never
+        # pollutes the executive summary's evidence-gap list.
+        missing_reason = GapReason.NO_EVIDENCE if sr.applied else GapReason.NOT_APPLICABLE
+        # The NOT_APPLICABLE gap text already says "wasn't run for this
+        # plan" — repeating `skipped_reason` after it would just restate
+        # the same thing twice; it's worth showing only for a genuinely
+        # missing (NO_EVIDENCE) figure.
+        gap_note = sr.skipped_reason if missing_reason is GapReason.NO_EVIDENCE else ""
         stress.append(
             StressLine(
                 name=humanise_token(sr.name),
@@ -810,7 +953,7 @@ def build_financial_section(
                         inputs=("stress cash flow",),
                     )
                     if sr.minimum_cash_balance_inr is not None
-                    else pv_missing("Minimum cash", reason=GapReason.NO_EVIDENCE)
+                    else pv_missing("Minimum cash", reason=missing_reason, note=gap_note)
                 ),
                 negative_cash_months=(
                     ", ".join(str(m) for m in sr.negative_cash_months)
@@ -824,7 +967,7 @@ def build_financial_section(
                         inputs=("stress cash flow", "debt schedule"),
                     )
                     if sr.average_annual_dscr is not None
-                    else pv_missing("Average DSCR", reason=GapReason.NO_EVIDENCE)
+                    else pv_missing("Average DSCR", reason=missing_reason, note=gap_note)
                 ),
                 outcome=humanise_token(sr.status.value) if sr.status is not None else "",
             )
@@ -860,10 +1003,15 @@ def build_financial_section(
         incomplete_note=FINANCIAL_INCOMPLETE_NOTE if incomplete else "",
         project_cost=project_cost_pv,
         promoter_contribution=promoter_contribution_pv,
+        capital_remaining_after_margin=capital_remaining_pv,
         required_promoter_margin=req_margin_pv,
         indicated_loan=indicated_loan_pv,
         margin_shortfall=margin_shortfall_pv,
         financing_scheme=scheme_pv,
+        capacity_feasible_project_cost=capacity_project_cost_pv,
+        capacity_required_margin=capacity_required_margin_pv,
+        capacity_indicated_loan=capacity_indicated_loan_pv,
+        capacity_note=capacity_note,
         loan_principal=principal_pv,
         interest_rate=rate_pv,
         tenure=tenure_pv,
@@ -923,15 +1071,29 @@ def build_scheme_knowledge_section(
     )
 
     def _param_line(name: ParameterName) -> ParameterLine:
+        declared_elsewhere = name in _DECLARED_CONFIG_BACKED_PARAMS
+        gap_reason = GapReason.DECLARED_ELSEWHERE if declared_elsewhere else GapReason.NO_EVIDENCE
         res = kb.resolution_for(name)
         if res is None:
             return ParameterLine(
                 name=name.value,
-                value=pv_missing(name.value, reason=GapReason.NO_EVIDENCE),
+                value=pv_missing(name.value, reason=gap_reason),
                 status="not_queried",
             )
         if res.status is ResolutionStatus.RESOLVED and res.chosen is not None:
             cid = kb_ids.get(name.value, "source")
+            scheme = res.chosen.applicability.scheme
+            # A resolved value can come from a scheme OTHER than the one this
+            # deployment's Financial assessment section is actually built on
+            # (`config/sih_scheme.py`) — e.g. a PMMY loan ceiling retrieved
+            # only because no SIH-specific document exists in the corpus. Name
+            # that scheme so the two are never mistaken for one figure.
+            scheme_note = (
+                f"This figure is specific to {scheme}, not the SIH-declared financing "
+                "structure this report's own EMI/DSCR figures are calculated from."
+                if scheme
+                else ""
+            )
             return ParameterLine(
                 name=name.value,
                 value=pv_sourced(
@@ -943,14 +1105,14 @@ def build_scheme_knowledge_section(
                 status=res.status.value,
                 citation_id=cid,
                 conditions=tuple(res.chosen.applicability.conditions),
-                notes=tuple(res.notes),
+                notes=(*res.notes, scheme_note) if scheme_note else tuple(res.notes),
             )
         return ParameterLine(
             name=name.value,
             value=pv_missing(
                 name.value,
-                reason=GapReason.NO_EVIDENCE,
-                note=f"resolution status: {res.status.value}",
+                reason=gap_reason,
+                note="" if declared_elsewhere else f"resolution status: {res.status.value}",
             ),
             status=res.status.value,
             notes=tuple(res.notes),
@@ -962,6 +1124,7 @@ def build_scheme_knowledge_section(
         line.name
         for line in (*resolved, *statutory)
         if line.status != ResolutionStatus.RESOLVED.value
+        and line.name not in {p.value for p in _DECLARED_CONFIG_BACKED_PARAMS}
     )
 
     passages: list[PassageLine] = []

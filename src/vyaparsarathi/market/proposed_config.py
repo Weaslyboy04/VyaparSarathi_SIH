@@ -29,6 +29,17 @@ class ProposedBusinessConfig(BaseModel):
     # [tunable]
     fuzzy_match_margin: float = Field(default=8.0, ge=0.0)
 
+    # A separate, lower bar used ONLY to *suggest* candidates for the
+    # entrepreneur to pick from (never to auto-resolve) when the strict
+    # auto-resolve pass above found nothing clearly ahead. Looser than
+    # `fuzzy_match_threshold` on purpose — a weak-but-plausible guess is
+    # worth offering as a clarification option; it is never worth guessing
+    # silently. [tunable]
+    suggestion_threshold: float = Field(default=55.0, ge=0.0, le=100.0)
+
+    # How many distinct category suggestions to offer at most. [tunable]
+    suggestion_top_n: int = Field(default=4, ge=1)
+
 
 DEFAULT_PROPOSED_BUSINESS_CONFIG = ProposedBusinessConfig()
 

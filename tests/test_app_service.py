@@ -827,8 +827,12 @@ def test_normal_mode_transcript_collects_then_delivers_one_advisory(tmp_path: Pa
     assert "market" not in r3.lower() and "swot" not in r3.lower()
 
     r4 = _turn(experience_declined=True)
-    assert "cash" in r4.lower() or "margin capital" in r4.lower()
+    assert "years" in r4.lower() or "experience" in r4.lower()
     assert "market" not in r4.lower() and "swot" not in r4.lower()
+
+    r4b = _turn(declined_slots=(SlotName.YEARS_EXPERIENCE,))
+    assert "cash" in r4b.lower() or "margin capital" in r4b.lower()
+    assert "market" not in r4b.lower() and "swot" not in r4b.lower()
 
     r5 = _turn(
         slot_updates=_provide_info(

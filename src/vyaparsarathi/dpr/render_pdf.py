@@ -15,6 +15,7 @@ section is one line or three pages.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from functools import partial
 from io import BytesIO
@@ -30,6 +31,7 @@ from reportlab.platypus import (
     Flowable,
     Frame,
     HRFlowable,
+    KeepTogether,
     LongTable,
     PageBreak,
     PageTemplate,
@@ -59,11 +61,24 @@ from vyaparsarathi.dpr.report_models import (
 
 _PAGE = A4
 _MARGIN = 18 * mm
-_INK = colors.HexColor("#1a1a1a")
-_MUTED = colors.HexColor("#5f6b7a")
-_RULE = colors.HexColor("#c9d2dc")
-_GAP_BG = colors.HexColor("#fdf0e6")
-_HEAD_BG = colors.HexColor("#eef2f7")
+
+# --- palette ---------------------------------------------------------
+# A single accent (a grounded teal — trustworthy, not corporate-blue,
+# not agri-green cliché) carries the whole document: headings, rules,
+# table header tints, and the cover. Everything else stays neutral ink /
+# slate so the accent reads as deliberate, not decorative.
+_INK = colors.HexColor("#20262E")
+_MUTED = colors.HexColor("#5C6B78")
+_RULE = colors.HexColor("#D9DFE6")
+_ACCENT = colors.HexColor("#0E6D5A")
+_ACCENT_DARK = colors.HexColor("#0A4E40")
+_ACCENT_TINT = colors.HexColor("#E7F2EF")
+_GAP_BG = colors.HexColor("#FBF0E4")
+_GAP_BORDER = colors.HexColor("#D9A55C")
+_GAP_INK = colors.HexColor("#7A4B1F")
+_SUMMARY_BG = _ACCENT_TINT
+_SUMMARY_BORDER = colors.HexColor("#8FC1B3")
+_HEAD_BG = _ACCENT_TINT
 
 _ORIGIN_TAG = {
     ValueOrigin.USER_PROVIDED: "user-stated",
@@ -79,68 +94,126 @@ def _styles() -> dict[str, ParagraphStyle]:
     base = ParagraphStyle(
         "body",
         fontName="Helvetica",
-        fontSize=9,
-        leading=12.5,
+        fontSize=9.5,
+        leading=13.5,
         textColor=_INK,
         alignment=TA_LEFT,
-        spaceAfter=3,
+        spaceAfter=4,
     )
     return {
         "body": base,
-        "small": ParagraphStyle("small", parent=base, fontSize=7.5, textColor=_MUTED, leading=10),
+        "small": ParagraphStyle("small", parent=base, fontSize=7.8, textColor=_MUTED, leading=10.5),
         "h1": ParagraphStyle(
             "h1",
             parent=base,
             fontName="Helvetica-Bold",
-            fontSize=14,
-            leading=17,
-            spaceBefore=4,
-            spaceAfter=6,
-            textColor=_INK,
+            fontSize=13.5,
+            leading=16,
+            spaceBefore=16,
+            spaceAfter=2,
+            textColor=_ACCENT_DARK,
         ),
         "h2": ParagraphStyle(
             "h2",
             parent=base,
             fontName="Helvetica-Bold",
-            fontSize=10.5,
-            leading=13,
-            spaceBefore=8,
+            fontSize=10,
+            leading=12.5,
+            spaceBefore=9,
             spaceAfter=3,
+            textColor=_INK,
         ),
         "gap": ParagraphStyle(
             "gap",
             parent=base,
             fontSize=9,
-            textColor=colors.HexColor("#8a4b1f"),
+            textColor=_GAP_INK,
             leftIndent=4,
             rightIndent=4,
             spaceBefore=3,
             spaceAfter=3,
         ),
+        "summary": ParagraphStyle(
+            "summary",
+            parent=base,
+            fontSize=10,
+            leading=14,
+            textColor=_ACCENT_DARK,
+            leftIndent=4,
+            rightIndent=4,
+            spaceBefore=2,
+            spaceAfter=2,
+        ),
+        "cover_kicker": ParagraphStyle(
+            "cover_kicker",
+            parent=base,
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            leading=11,
+            alignment=TA_CENTER,
+            textColor=_ACCENT,
+            spaceAfter=8,
+        ),
         "cover_title": ParagraphStyle(
             "cover_title",
             parent=base,
-            fontName="Helvetica-Bold",
-            fontSize=22,
-            leading=26,
+            fontName="Times-Bold",
+            fontSize=32,
+            leading=36,
             alignment=TA_CENTER,
-            spaceAfter=6,
+            textColor=_ACCENT_DARK,
+            spaceAfter=4,
         ),
         "cover_sub": ParagraphStyle(
             "cover_sub",
             parent=base,
-            fontSize=11,
+            fontName="Times-Italic",
+            fontSize=13,
             alignment=TA_CENTER,
             textColor=_MUTED,
             spaceAfter=2,
         ),
-        "cell": ParagraphStyle("cell", parent=base, fontSize=8.5, leading=11, spaceAfter=0),
+        "cover_note": ParagraphStyle(
+            "cover_note",
+            parent=base,
+            fontSize=9,
+            alignment=TA_CENTER,
+            textColor=_MUTED,
+            spaceAfter=2,
+        ),
+        "cover_card_head": ParagraphStyle(
+            "cover_card_head",
+            parent=base,
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=10,
+            textColor=_ACCENT_DARK,
+            spaceAfter=0,
+        ),
+        "cover_card_val": ParagraphStyle(
+            "cover_card_val",
+            parent=base,
+            fontSize=10,
+            leading=12.5,
+            textColor=_INK,
+            spaceAfter=0,
+        ),
+        "disclaimer": ParagraphStyle(
+            "disclaimer",
+            parent=base,
+            fontSize=8,
+            leading=11.5,
+            textColor=_MUTED,
+            spaceAfter=2,
+        ),
+        "cell": ParagraphStyle("cell", parent=base, fontSize=8.5, leading=11.5, spaceAfter=0),
         "cell_head": ParagraphStyle(
             "cell_head",
             parent=base,
             fontName="Helvetica-Bold",
             fontSize=8.5,
-            leading=11,
+            leading=11.5,
+            textColor=_ACCENT_DARK,
             spaceAfter=0,
         ),
     }
@@ -169,19 +242,25 @@ class _NumberedCanvas(_canvas.Canvas):
 
     def _decorate(self, total: int) -> None:
         page = self._pageNumber
+        # header
+        self.setFont("Helvetica-Bold", 7.5)
+        self.setFillColor(_ACCENT_DARK)
+        self.drawString(_MARGIN, _PAGE[1] - 12 * mm, "VyaparSarathi")
         self.setFont("Helvetica", 7.5)
         self.setFillColor(_MUTED)
-        # header
-        self.drawString(_MARGIN, _PAGE[1] - 12 * mm, self._header)
-        self.drawRightString(_PAGE[0] - _MARGIN, _PAGE[1] - 12 * mm, "VyaparSarathi DPR")
-        self.setStrokeColor(_RULE)
+        self.drawRightString(_PAGE[0] - _MARGIN, _PAGE[1] - 12 * mm, self._header)
+        self.setStrokeColor(_ACCENT)
+        self.setLineWidth(1.1)
         self.line(_MARGIN, _PAGE[1] - 13.5 * mm, _PAGE[0] - _MARGIN, _PAGE[1] - 13.5 * mm)
         # footer
+        self.setStrokeColor(_RULE)
+        self.setLineWidth(0.5)
         self.line(_MARGIN, 15 * mm, _PAGE[0] - _MARGIN, 15 * mm)
+        self.setFillColor(_MUTED)
         self.drawString(_MARGIN, 11 * mm, self._footer)
         self.drawRightString(_PAGE[0] - _MARGIN, 11 * mm, f"Page {page} of {total}")
         self.drawCentredString(
-            _PAGE[0] / 2, 11 * mm, "Decision-support material — not a loan sanction"
+            _PAGE[0] / 2, 11 * mm, "Decision-support material, not a loan sanction"
         )
 
 
@@ -217,11 +296,16 @@ def render_pdf_bytes(doc: DprDocument) -> bytes:
     story: list[Flowable] = []
     story += _cover(doc.cover, st)
     story.append(PageBreak())
-    for section in doc.ordered_sections():
+    sections = doc.ordered_sections()
+    for i, section in enumerate(sections):
+        # A hard break only where the document genuinely changes register —
+        # narrative report -> supporting appendix. Everywhere else, sections
+        # flow one after another (a colored rule + spacing marks the
+        # boundary), so a section with one line of content costs one line,
+        # not a wasted page — the single biggest lever on report length.
+        if isinstance(section, AnnexuresSection) and i > 0:
+            story.append(PageBreak())
         story += _section_flowables(section, doc, st)
-        story.append(PageBreak())
-    if story and isinstance(story[-1], PageBreak):
-        story.pop()
 
     pdf.build(
         story,
@@ -237,8 +321,27 @@ def _p(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(_esc(text), style)
 
 
+# Every string that reaches the PDF funnels through here (directly via `_p`,
+# or via `_kv_table`/`_long_table`/`_bullets`/`_pv_text`), so this is the one
+# place that needs to know the reader-facing house style avoids em dashes —
+# every upstream module can keep writing them in comments/docstrings
+# unaffected. A bare placeholder glyph becomes a word ("N/A"); an em dash
+# used mid-sentence as a clause break reads more naturally as a comma; any
+# stray survivor (no surrounding space, e.g. glued to a word) falls back to
+# a plain hyphen rather than vanishing silently.
+_MID_SENTENCE_EM_DASH_RE = re.compile(r"\s+—\s+")
+
+
+def _de_emdash(text: str) -> str:
+    if text == "—":
+        return "N/A"
+    text = _MID_SENTENCE_EM_DASH_RE.sub(", ", text)
+    return text.replace("—", "-").replace("–", "-")
+
+
 def _esc(text: str) -> str:
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = _de_emdash(str(text))
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _pv_text(pv: ProvenancedValue) -> str:
@@ -314,10 +417,17 @@ def _bullets(items: Iterable[str], st: dict[str, ParagraphStyle]) -> list[Flowab
 
 
 def _heading(section: ReportSection, st: dict) -> list[Flowable]:
-    out: list[Flowable] = [
-        _p(section.title, st["h1"]),
-        HRFlowable(width="100%", color=_RULE, thickness=0.6, spaceAfter=6),
-    ]
+    # The title + accent rule are kept together so a section header is
+    # never stranded alone at the bottom of a page, separated from its own
+    # first line of content — cheap insurance now that sections flow
+    # continuously instead of each starting a fresh page.
+    head = KeepTogether(
+        [
+            _p(section.title, st["h1"]),
+            HRFlowable(width=38 * mm, color=_ACCENT, thickness=1.6, spaceAfter=8, hAlign="LEFT"),
+        ]
+    )
+    out: list[Flowable] = [head]
     if section.status is SectionStatus.EVIDENCE_GAP:
         out.append(_gap_box(section.gap_note or "Not available from current evidence.", st))
     elif section.status is SectionStatus.PARTIAL and section.gap_note:
@@ -332,7 +442,7 @@ def _gap_box(text: str, st: dict) -> Table:
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, -1), _GAP_BG),
-                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e0b48a")),
+                ("BOX", (0, 0), (-1, -1), 0.5, _GAP_BORDER),
                 ("TOPPADDING", (0, 0), (-1, -1), 6),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
                 ("LEFTPADDING", (0, 0), (-1, -1), 8),
@@ -343,32 +453,107 @@ def _gap_box(text: str, st: dict) -> Table:
     return box
 
 
+def _summary_card(lines: tuple[str, ...], st: dict) -> Table | None:
+    """A plain-language callout — 'In short' — at the top of the executive
+    summary: what the recommendation means, whether the plan is affordable,
+    what the local market looks like, and what to do next, each in one
+    reader-facing sentence with no pipeline vocabulary. Purely a
+    presentation of figures already computed and shown in full elsewhere in
+    this report."""
+    if not lines:
+        return None
+    inner: list[Flowable] = [Paragraph("<b>In short</b>", st["summary"])]
+    inner += [Paragraph("• " + _esc(line), st["summary"]) for line in lines]
+    box = Table([[inner]], colWidths=[_PAGE[0] - 2 * _MARGIN])
+    box.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), _SUMMARY_BG),
+                ("BOX", (0, 0), (-1, -1), 0.5, _SUMMARY_BORDER),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ]
+        )
+    )
+    return box
+
+
 # --- cover ---------------------------------------------------------
 
 
-def _cover(cover: CoverPage, st: dict) -> list[Flowable]:
-    out: list[Flowable] = [
-        Spacer(1, 30 * mm),
-        _p("VyaparSarathi", st["cover_title"]),
-        _p("Detailed Project Report", st["cover_sub"]),
-        Spacer(1, 4 * mm),
-        _p(cover.report_kind, st["cover_sub"]),
-        Spacer(1, 16 * mm),
-        _kv_table(
-            [
-                ("Proposed business", cover.proposed_business),
-                ("Location", cover.location),
-                ("Report ID", cover.report_id),
-                ("Generated", cover.generated_on),
-                ("Session", cover.session_id),
-            ],
-            st,
-        ),
-        Spacer(1, 14 * mm),
-        _p("Disclaimer", st["h2"]),
-        _p(cover.disclaimer, st["body"]),
+def _cover_card(cover: CoverPage, st: dict) -> Table:
+    rows: list[tuple[str, ProvenancedValue | str]] = [
+        ("Proposed business", cover.proposed_business),
+        ("Location", cover.location),
+        ("Report ID", cover.report_id),
+        ("Generated", cover.generated_on),
+        ("Session", cover.session_id),
     ]
-    return out
+    data: list[list[Paragraph]] = []
+    for label, value in rows:
+        val_text = _pv_text(value) if isinstance(value, ProvenancedValue) else _esc(str(value))
+        data.append(
+            [
+                Paragraph(_esc(label.upper()), st["cover_card_head"]),
+                Paragraph(val_text, st["cover_card_val"]),
+            ]
+        )
+    tbl = Table(data, colWidths=[42 * mm, None], hAlign="CENTER")
+    tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), _ACCENT_TINT),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LINEBELOW", (0, 0), (-1, -2), 0.5, colors.white),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ("LEFTPADDING", (0, 0), (-1, -1), 14),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+                ("LINEABOVE", (0, 0), (-1, 0), 2, _ACCENT),
+                ("LINEBELOW", (0, -1), (-1, -1), 2, _ACCENT),
+            ]
+        )
+    )
+    return tbl
+
+
+def _cover(cover: CoverPage, st: dict) -> list[Flowable]:
+    return [
+        Spacer(1, 26 * mm),
+        _p("DECISION-SUPPORT REPORT", st["cover_kicker"]),
+        _p("VyaparSarathi", st["cover_title"]),
+        HRFlowable(
+            width=26 * mm, color=_ACCENT, thickness=1.4, spaceBefore=2, spaceAfter=10,
+            hAlign="CENTER",
+        ),
+        _p("Detailed Project Report", st["cover_sub"]),
+        Spacer(1, 22 * mm),
+        _cover_card(cover, st),
+        Spacer(1, 20 * mm),
+        _p(cover.report_kind, st["cover_note"]),
+        Spacer(1, 30 * mm),
+        _disclaimer_box(cover.disclaimer, st),
+    ]
+
+
+def _disclaimer_box(text: str, st: dict) -> Table:
+    inner = Paragraph("<b>Disclaimer.</b> " + _esc(text), st["disclaimer"])
+    box = Table([[inner]], colWidths=[_PAGE[0] - 2 * _MARGIN])
+    box.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F5F6F8")),
+                ("BOX", (0, 0), (-1, -1), 0.4, _RULE),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ]
+        )
+    )
+    return box
 
 
 # --- section dispatch --------------------------------------------
@@ -383,7 +568,11 @@ def _section_flowables(section: ReportSection, doc: DprDocument, st: dict) -> li
 
 
 def _exec(sec: ExecutiveSummary, doc: DprDocument, st: dict) -> list[Flowable]:
-    out: list[Flowable] = [
+    out: list[Flowable] = []
+    card = _summary_card(sec.plain_summary, st)
+    if card is not None:
+        out.append(card)
+    out += [
         _kv_table(
             [
                 ("Recommendation", sec.recommendation),
@@ -500,7 +689,10 @@ def _opportunity(sec: OpportunitySection, doc: DprDocument, st: dict) -> list[Fl
         out.append(
             _long_table(
                 ["Factor", "Weight", "Contribution", "Why"],
-                [[f.name, f.weight_pct, f.contribution, f.reason] for f in sec.factors],
+                [
+                    [f.name, f.weight_pct, f.contribution, f.villager_reason or f.reason]
+                    for f in sec.factors
+                ],
                 [34 * mm, 16 * mm, 34 * mm, None],
                 st,
             )
@@ -517,7 +709,7 @@ def _opportunity(sec: OpportunitySection, doc: DprDocument, st: dict) -> list[Fl
                         a.score,
                         a.market_label,
                         a.capital_fit,
-                        "; ".join(a.reasons) or "—",
+                        "; ".join(a.villager_reasons or a.reasons) or "—",
                     ]
                     for a in sec.alternatives
                 ],
@@ -531,7 +723,7 @@ def _opportunity(sec: OpportunitySection, doc: DprDocument, st: dict) -> list[Fl
 
 
 def _project_plan(sec: ProjectPlanSection, doc: DprDocument, st: dict) -> list[Flowable]:
-    return [
+    out = [
         _kv_table(
             [
                 ("Business category", sec.category),
@@ -545,6 +737,9 @@ def _project_plan(sec: ProjectPlanSection, doc: DprDocument, st: dict) -> list[F
         ),
         _p(sec.note, st["small"]),
     ]
+    if sec.margin_note:
+        out.append(_p(sec.margin_note, st["small"]))
+    return out
 
 
 def _financial(sec: FinancialAssessmentSection, doc: DprDocument, st: dict) -> list[Flowable]:
@@ -563,7 +758,8 @@ def _financial(sec: FinancialAssessmentSection, doc: DprDocument, st: dict) -> l
                 ("Feasibility status", sec.feasibility_status),
                 ("Deciding rung", sec.deciding_rung or "—"),
                 ("Project cost", sec.project_cost),
-                ("Promoter cash contribution", sec.promoter_contribution),
+                ("Available promoter cash (stated)", sec.promoter_contribution),
+                ("Capital remaining after margin", sec.capital_remaining_after_margin),
                 ("Required promoter margin", sec.required_promoter_margin),
                 ("Indicated loan", sec.indicated_loan),
                 ("Margin shortfall vs stated cash", sec.margin_shortfall),
@@ -571,6 +767,21 @@ def _financial(sec: FinancialAssessmentSection, doc: DprDocument, st: dict) -> l
             ],
             st,
         ),
+    ]
+    if sec.capacity_note:
+        out += [
+            _p("Scheme capacity screen", st["h2"]),
+            _p(sec.capacity_note, st["small"]),
+            _kv_table(
+                [
+                    ("Feasible project cost (capacity screen)", sec.capacity_feasible_project_cost),
+                    ("Required promoter margin (capacity screen)", sec.capacity_required_margin),
+                    ("Indicated loan (capacity screen)", sec.capacity_indicated_loan),
+                ],
+                st,
+            ),
+        ]
+    out += [
         _p("Loan terms & servicing", st["h2"]),
         _kv_table(
             [
@@ -688,7 +899,12 @@ def _risks(sec: RisksSwotSection, doc: DprDocument, st: dict) -> list[Flowable]:
     for title, items in quads:
         if items:
             out.append(_p(title, st["h2"]))
-            out += _bullets([f"{i.text}  ({i.source_ref})" for i in items], st)
+            # `source_ref` (a literal internal field path, e.g.
+            # "opportunity.candidates[proposed].capital_fit") is audit
+            # trail, not reader content — it stays on the model and in
+            # Annexure B's calculation-provenance table, but is never
+            # printed inline in front of the entrepreneur.
+            out += _bullets([i.text for i in items], st)
     if sec.quadrant_notes:
         out += [_p("Quadrant notes", st["h2"]), *_bullets(sec.quadrant_notes, st)]
     if sec.structured_risks:

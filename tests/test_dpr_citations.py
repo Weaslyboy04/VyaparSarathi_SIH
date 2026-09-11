@@ -101,6 +101,15 @@ def test_annexure_sources_are_sorted_and_self_contained(doc: DprDocument) -> Non
 
 
 def test_unresolved_scheme_parameters_say_no_evidence(doc: DprDocument) -> None:
+    """Every unresolved parameter is still shown, never hidden, as
+    `NOT_AVAILABLE` — but a parameter already answered elsewhere via the SIH
+    DECLARED_CONFIG financing structure (interest rate, tenure, moratorium,
+    promoter margin) is excluded from `no_evidence_parameters`, so it does
+    not double up with the figure the Financial assessment section already
+    gives for it."""
+    from vyaparsarathi.dpr.sections import _DECLARED_CONFIG_BACKED_PARAMS
+
+    declared_elsewhere_names = {p.value for p in _DECLARED_CONFIG_BACKED_PARAMS}
     unresolved = [
         line
         for line in doc.scheme_knowledge.resolved_parameters
@@ -108,4 +117,7 @@ def test_unresolved_scheme_parameters_say_no_evidence(doc: DprDocument) -> None:
     ]
     for line in unresolved:
         assert line.value.origin is ValueOrigin.NOT_AVAILABLE
-        assert line.name in doc.scheme_knowledge.no_evidence_parameters
+        if line.name in declared_elsewhere_names:
+            assert line.name not in doc.scheme_knowledge.no_evidence_parameters
+        else:
+            assert line.name in doc.scheme_knowledge.no_evidence_parameters

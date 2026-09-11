@@ -56,6 +56,9 @@ class FactorBreakdown(BaseModel):
     contribution: ProvenancedValue
     weight_pct: str
     reason: str
+    # Plain-language version of `reason` for the reader-facing "Why" column;
+    # empty falls back to `reason`.
+    villager_reason: str = ""
 
 
 class AlternativeOption(BaseModel):
@@ -66,6 +69,9 @@ class AlternativeOption(BaseModel):
     market_label: str
     rank: int | None = None
     reasons: tuple[str, ...] = ()
+    # Plain-language version of `reasons`, same order; empty falls back to
+    # `reasons`.
+    villager_reasons: tuple[str, ...] = ()
     capital_fit: str = ""
 
 
@@ -169,6 +175,12 @@ class ExecutiveSummary(ReportSection):
     risks: tuple[str, ...] = ()
     next_actions: tuple[str, ...] = ()
     evidence_gaps: tuple[str, ...] = ()
+    # 2-4 short, plain-language sentences ("can you afford it", "is the
+    # market good", "what should you do next") translating the technical
+    # verdicts above into a form a first-time reader can act on without
+    # reading the rest of the report. Rendered as a callout card at the
+    # top of this section.
+    plain_summary: tuple[str, ...] = ()
 
 
 class EntrepreneurProfileSection(ReportSection):
@@ -217,6 +229,11 @@ class ProjectPlanSection(ReportSection):
     stated_cogs_pct: ProvenancedValue
     stated_fixed_opex: ProvenancedValue
     note: str
+    # A plain-language gross-margin sentence, computed purely from the
+    # stated cost-of-goods share — "" when cost of goods wasn't stated.
+    # Pure arithmetic on an already-known figure, never an invented price
+    # suggestion.
+    margin_note: str = ""
 
 
 class FinancialAssessmentSection(ReportSection):
@@ -227,10 +244,22 @@ class FinancialAssessmentSection(ReportSection):
 
     project_cost: ProvenancedValue
     promoter_contribution: ProvenancedValue
+    capital_remaining_after_margin: ProvenancedValue
     required_promoter_margin: ProvenancedValue
     indicated_loan: ProvenancedValue
     margin_shortfall: ProvenancedValue
     financing_scheme: ProvenancedValue
+
+    # The SIH scheme-capacity screen (CLAUDE.md §12: "maximum possible
+    # project capacity under the scheme" vs "actual viable business project
+    # cost") — what the declared 10%/90% split says the stated Available
+    # Margin Capital could support. Shown ALONGSIDE the actual business-based
+    # figures above whenever both exist, never only as a fallback for when
+    # the real structuring is missing.
+    capacity_feasible_project_cost: ProvenancedValue
+    capacity_required_margin: ProvenancedValue
+    capacity_indicated_loan: ProvenancedValue
+    capacity_note: str = ""
 
     loan_principal: ProvenancedValue
     interest_rate: ProvenancedValue

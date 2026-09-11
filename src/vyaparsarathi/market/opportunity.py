@@ -119,6 +119,32 @@ def _assess_candidate(
 # -- the three components -------------------------------------------------
 
 
+# Plain-language translation of each market-assessment label, for the DPR's
+# reader-facing "Reasons" column — the internal `reason` string below is kept
+# for audit/testing (CLAUDE.md §23's provenance discipline), this is purely
+# additive. [tunable — wording only, the label itself is decided elsewhere]
+_MARKET_LABEL_PLAIN: dict[str, str] = {
+    "underserved": (
+        "Available local business data suggests a potential service gap here — few or "
+        "no similar businesses currently serve this area, but this data is partial and "
+        "does not by itself prove demand; ground validation is recommended."
+    ),
+    "mixed": (
+        "There is some demand here, but it is shared with existing "
+        "businesses — a moderate opportunity, not a clear gap."
+    ),
+    "served": "This kind of business already serves the area reasonably well.",
+    "crowded": (
+        "There are already many similar businesses here for the size of "
+        "the local market — competition looks high."
+    ),
+    "thin_market": "There may not be enough people here to reliably support this business.",
+    "insufficient_evidence": (
+        "There isn't enough local data available to judge demand for this business here."
+    ),
+}
+
+
 def _market_component(
     label: MarketAssessmentLabel, rung: str | None, cfg: OpportunityConfig
 ) -> ScoreComponent:
@@ -129,6 +155,9 @@ def _market_component(
         + (f" (decided at ladder rung '{rung}')" if rung else "")
         + (f" -> {points}/100." if points is not None else " -> not scorable.")
     )
+    villager_reason = _MARKET_LABEL_PLAIN.get(
+        label.value, "The local market for this business could not be clearly read."
+    )
     return ScoreComponent(
         name=_MARKET,
         available=value is not None,
@@ -137,6 +166,7 @@ def _market_component(
         effective_weight=0.0,
         contribution=None,
         reason=reason,
+        villager_reason=villager_reason,
         unavailable_kind="" if value is not None else "no_config_table",
         evidence=[
             OpportunityEvidenceRef(source="assessment", field="label", value=label.value),
@@ -392,12 +422,23 @@ def _decide_stance(
         gap = (cand.opportunity_score or 0) - (proposed_c.opportunity_score or 0)
         if gap < cfg.material_margin:
             continue
+        experience_component = next(
+            (c for c in cand.components if c.name == _EXPERIENCE), None
+        )
+        experience_caveat = (
+            " No trade experience is recorded for this candidate; treat it as a potential "
+            "opportunity that needs verification, not a decided recommendation."
+            if experience_component is not None and not experience_component.available
+            else ""
+        )
         return (
             Stance.ALTERNATIVE_MATERIALLY_BETTER,
             f"'{cand.category.value}' has a strictly stronger market label "
             f"('{cand.market_label.value}' vs '{proposed_c.market_label.value}'), sufficient "
             f"evidence, a resolved capital fit, and a score {gap} point(s) higher than the "
-            f"proposed '{proposed_category.value}'.",
+            f"proposed '{proposed_category.value}'.{experience_caveat} Licensing and "
+            "compliance requirements for this category have not been independently "
+            "verified in this assessment — confirm them locally before committing.",
             cand.category,
         )
 
@@ -489,8 +530,11 @@ def score_opportunities(
 
         reasons = [c.reason for c in components]
         reasons.append(capital_reason)
+        villager_reasons = [c.villager_reason or c.reason for c in components]
+        villager_reasons.append(capital_reason)
         if score is not None:
             reasons.append(f"Overall opportunity score {score}/100.")
+            villager_reasons.append(f"Overall opportunity score: {score} out of 100.")
 
         scored.append(
             ScoredCandidate(
@@ -512,6 +556,7 @@ def score_opportunities(
                 direct_competitors=direct,
                 persons_per_direct_competitor=ppc,
                 reasons=reasons,
+                villager_reasons=villager_reasons,
                 warnings=warns,
             )
         )

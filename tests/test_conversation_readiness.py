@@ -84,6 +84,12 @@ def test_collection_order_is_respected_one_item_at_a_time() -> None:
         ),
     )
     session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
+    assert advisory_readiness(session).next_ask is CollectionItem.YEARS_EXPERIENCE
+
+    understanding = TurnUnderstanding(
+        intent=Intent.DECLINE_SLOT, declined_slots=(SlotName.YEARS_EXPERIENCE,)
+    )
+    session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
     assert advisory_readiness(session).next_ask is CollectionItem.LIQUID_CASH_INR
 
     session = _provide(session, cash="100000")
@@ -102,19 +108,29 @@ def test_declined_assets_and_experience_count_as_answered() -> None:
 
     understanding = TurnUnderstanding(intent=Intent.DECLINE_SLOT, experience_declined=True)
     session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
+    assert advisory_readiness(session).next_ask is CollectionItem.YEARS_EXPERIENCE
+
+    understanding = TurnUnderstanding(
+        intent=Intent.DECLINE_SLOT, declined_slots=(SlotName.YEARS_EXPERIENCE,)
+    )
+    session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
     assert advisory_readiness(session).next_ask is CollectionItem.LIQUID_CASH_INR
 
     session = _provide(session, cash="100000")
     assert advisory_readiness(session).ready is True
 
 
-def test_tier_a_ready_with_exactly_three_answers_plus_two_declines() -> None:
-    """Business + location + cash, with assets/experience explicitly
-    declined: exactly the minimum path to `ready=True`."""
+def test_tier_a_ready_with_exactly_three_answers_plus_three_declines() -> None:
+    """Business + location + cash, with assets/experience/years-of-experience
+    explicitly declined: exactly the minimum path to `ready=True`."""
     session = _session()
     session = _provide(session, business="grocery", location="Bhagwanpur, Bihar")
     understanding = TurnUnderstanding(
         intent=Intent.DECLINE_SLOT, assets_declined=True, experience_declined=True
+    )
+    session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
+    understanding = TurnUnderstanding(
+        intent=Intent.DECLINE_SLOT, declined_slots=(SlotName.YEARS_EXPERIENCE,)
     )
     session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
     session = _provide(session, cash="100000")
@@ -130,6 +146,10 @@ def test_missing_viability_is_independent_of_missing_required() -> None:
     session = _provide(session, business="grocery", location="Bhagwanpur, Bihar")
     understanding = TurnUnderstanding(
         intent=Intent.DECLINE_SLOT, assets_declined=True, experience_declined=True
+    )
+    session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
+    understanding = TurnUnderstanding(
+        intent=Intent.DECLINE_SLOT, declined_slots=(SlotName.YEARS_EXPERIENCE,)
     )
     session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
     session = _provide(session, cash="100000")
@@ -153,6 +173,10 @@ def _tier_a_ready_session() -> ConversationSession:
     session = _provide(session, business="grocery", location="Bhagwanpur, Bihar")
     understanding = TurnUnderstanding(
         intent=Intent.DECLINE_SLOT, assets_declined=True, experience_declined=True
+    )
+    session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
+    understanding = TurnUnderstanding(
+        intent=Intent.DECLINE_SLOT, declined_slots=(SlotName.YEARS_EXPERIENCE,)
     )
     session, _ = apply_understanding(session, understanding, turn_index=session.turn_index + 1)
     return _provide(session, cash="100000")

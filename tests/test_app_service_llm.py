@@ -412,6 +412,12 @@ def test_normal_mode_full_transcript_reaches_one_advisory_then_offers_a_report(
             ),
             LlmResponse(
                 text=json.dumps(
+                    {"intent": "decline_slot", "declined_slots": ["years_experience"]}
+                ),
+                prompt_id="extraction",
+            ),
+            LlmResponse(
+                text=json.dumps(
                     {
                         "intent": "provide_info",
                         "slot_updates": [
@@ -483,7 +489,10 @@ def test_normal_mode_full_transcript_reaches_one_advisory_then_offers_a_report(
     assert "experience" in " ".join(m.text for m in r1.messages).lower()
 
     r2 = _send(service, session_id, "no, I don't have experience in this")
-    assert "sell" in " ".join(m.text for m in r2.messages).lower()
+    assert "experience" in " ".join(m.text for m in r2.messages).lower()
+
+    r2b = _send(service, session_id, "none, I'm starting fresh")
+    assert "sell" in " ".join(m.text for m in r2b.messages).lower()
 
     r3 = _send(service, session_id, "I expect to sell about 40000 a month")
     assert "cost of goods" in " ".join(m.text for m in r3.messages).lower()

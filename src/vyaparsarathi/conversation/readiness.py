@@ -65,23 +65,31 @@ class CollectionItem(StrEnum):
     LOCATION_TEXT = "location_text"
     OWNED_ASSETS = "owned_assets"
     TRADE_EXPERIENCE = "trade_experience"
+    YEARS_EXPERIENCE = "years_experience"
     LIQUID_CASH_INR = "liquid_cash_inr"
 
 
 # The order rung 6 asks in — business and location first (the two hard
-# structural blockers rung 3 already gates the DAG itself on), then the two
-# declinable profile questions, then Available Margin Capital last, since
-# it is the one figure that immediately produces a complete SIH financing
-# answer once everything else is in.
+# structural blockers rung 3 already gates the DAG itself on), then the
+# three declinable profile questions, then Available Margin Capital last,
+# since it is the one figure that immediately produces a complete SIH
+# financing answer once everything else is in.
 COLLECTION_ORDER: tuple[CollectionItem, ...] = (
     CollectionItem.PROPOSED_BUSINESS_TEXT,
     CollectionItem.LOCATION_TEXT,
     CollectionItem.OWNED_ASSETS,
     CollectionItem.TRADE_EXPERIENCE,
+    CollectionItem.YEARS_EXPERIENCE,
     CollectionItem.LIQUID_CASH_INR,
 )
 
-# CollectionItem -> the SlotName it mirrors, for the three scalar members.
+# CollectionItem -> the SlotName it mirrors, for the three HARD scalar
+# members (never satisfiable by a decline — business/location are
+# structural blockers, liquid cash is required for the SIH financing
+# answer). YEARS_EXPERIENCE is deliberately absent here: unlike those
+# three, it is a declinable profile question (like OWNED_ASSETS/
+# TRADE_EXPERIENCE below) even though it happens to be a scalar slot, so
+# it gets its own branch in `_item_satisfied` instead.
 _SCALAR_SLOT: dict[CollectionItem, SlotName] = {
     CollectionItem.PROPOSED_BUSINESS_TEXT: SlotName.PROPOSED_BUSINESS_TEXT,
     CollectionItem.LOCATION_TEXT: SlotName.LOCATION_TEXT,
@@ -142,6 +150,11 @@ def _item_satisfied(
         return session.assets.current.state in _SET_ANSWERED_STATES
     if item is CollectionItem.TRADE_EXPERIENCE:
         return session.experience_categories.current.state in _SET_ANSWERED_STATES
+    if item is CollectionItem.YEARS_EXPERIENCE:
+        # Declinable (like OWNED_ASSETS/TRADE_EXPERIENCE) even though it's a
+        # scalar slot: a DECLINED answer counts as answered, never re-asked.
+        state = session.slot(SlotName.YEARS_EXPERIENCE).current.state
+        return SlotName.YEARS_EXPERIENCE in satisfied or state is SlotState.DECLINED
     raise AssertionError(f"unhandled CollectionItem: {item!r}")  # pragma: no cover — closed enum
 
 

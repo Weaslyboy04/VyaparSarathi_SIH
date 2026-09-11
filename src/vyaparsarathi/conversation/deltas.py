@@ -244,17 +244,23 @@ def apply_understanding(
     selected_geocode_candidate = session.selected_geocode_candidate
     if understanding.selected_choice is not None:
         selected_geocode_candidate = understanding.selected_choice
-        # When a choice is provided, try to resolve any pending LOCATION_TEXT
-        # ambiguity. If the choice is valid (1-based index in range of options),
-        # update the slot to USER_PROVIDED with the selected option value.
-        # If invalid, keep the slot AMBIGUOUS and record a warning.
-        location_slot = slots.get(SlotName.LOCATION_TEXT)
-        if location_slot is not None and location_slot.state is SlotState.AMBIGUOUS:
-            options = location_slot.current.options
+        # When a choice is provided, try to resolve whichever slot is
+        # currently AMBIGUOUS — LOCATION_TEXT (geocoding candidates) or
+        # PROPOSED_BUSINESS_TEXT (category suggestions). At most one is
+        # ever pending at once (planner.py rung 2 blocks on the first).
+        # If the choice is valid (1-based index in range of options),
+        # update that slot to USER_PROVIDED with the selected option
+        # value. If invalid, keep the slot AMBIGUOUS and record a warning.
+        ambiguous_name = next(
+            (name for name, slot in slots.items() if slot.state is SlotState.AMBIGUOUS), None
+        )
+        if ambiguous_name is not None:
+            ambiguous_slot = slots[ambiguous_name]
+            options = ambiguous_slot.current.options
             choice_idx = understanding.selected_choice - 1  # 1-based to 0-based
             if 0 <= choice_idx < len(options):
                 selected_option = options[choice_idx]
-                slots[SlotName.LOCATION_TEXT] = location_slot.updated(
+                slots[ambiguous_name] = ambiguous_slot.updated(
                     SlotValue(
                         state=SlotState.USER_PROVIDED,
                         value=selected_option,

@@ -350,6 +350,24 @@ def test_proposed_is_best_when_it_tops_the_ranking() -> None:
     assert res.recommended_pivot is None
 
 
+def test_underserved_wording_does_not_overclaim_unmet_demand() -> None:
+    """`_MARKET_LABEL_PLAIN["underserved"]` must not assert "strong unmet
+    demand" as fact — CLAUDE.md §11 states absence of competition never
+    proves demand on its own, and §3.5 bans false precision/overclaiming
+    from thin, partial local-business coverage. The plain-language reason
+    must instead point at ground validation."""
+    discovery = _discovery({C.GROCERY: 2}, confidence=0.6)
+    res = score_opportunities(
+        _evidence(discovery, _demand(persons_each=6_000)),
+        _profile(proposed_category=C.GROCERY),
+    )
+    grocery = next(c for c in res.candidates if c.category is C.GROCERY)
+    assert grocery.market_label is MarketAssessmentLabel.UNDERSERVED
+    joined = " ".join(grocery.villager_reasons).lower()
+    assert "strong unmet demand" not in joined
+    assert "ground validation" in joined or "verify" in joined
+
+
 def test_strictly_better_label_and_margin_yields_materially_better() -> None:
     ev = _crowded_grocery_underserved_alt()
     res = score_opportunities(
@@ -369,6 +387,50 @@ def test_strictly_better_label_and_margin_yields_materially_better() -> None:
     q_rank = DEFAULT_OPPORTUNITY_CONFIG.label_lattice_rank[proposed.market_label.value]
     assert p_rank > q_rank
     assert (pivot.opportunity_score or 0) - (proposed.opportunity_score or 0) >= 8
+
+
+def test_pivot_without_recorded_experience_flags_verification_needed() -> None:
+    """The judge's actual complaint: a pivot recommended purely on market
+    score, with no trade experience recorded and no compliance/licensing
+    check ever performed in this phase, must say so — never presented as an
+    unconditionally confident recommendation (CLAUDE.md §12, §30)."""
+    ev = _crowded_grocery_underserved_alt()
+    res = score_opportunities(
+        ev,
+        _profile(
+            proposed_category=C.GROCERY,
+            liquid_cash_inr=800_000,
+            assets={AssetKind.STOREFRONT, AssetKind.COLD_STORAGE},
+            # deliberately no experience_categories
+        ),
+    )
+    assert res.stance is Stance.ALTERNATIVE_MATERIALLY_BETTER
+    assert res.recommended_pivot is not None
+    reason = res.stance_reason.lower()
+    assert "experience" in reason
+    assert "not recorded" in reason or "no trade experience" in reason
+    assert "compliance" in reason or "licensing" in reason
+    assert "verif" in reason  # "verify" / "verification"
+
+
+def test_pivot_with_recorded_experience_does_not_flag_experience_gap() -> None:
+    """When the pivot candidate's trade experience IS on file, the report
+    must not claim experience is unrecorded — only the standing
+    compliance/licensing caveat (always true in this phase) still applies."""
+    ev = _crowded_grocery_underserved_alt()
+    res = score_opportunities(
+        ev,
+        _profile(
+            proposed_category=C.GROCERY,
+            liquid_cash_inr=800_000,
+            experience_categories={C.DAIRY},
+            assets={AssetKind.STOREFRONT, AssetKind.COLD_STORAGE},
+        ),
+    )
+    assert res.stance is Stance.ALTERNATIVE_MATERIALLY_BETTER
+    reason = res.stance_reason.lower()
+    assert "not recorded" not in reason
+    assert "compliance" in reason or "licensing" in reason
 
 
 def test_no_proposal_gives_no_proposal_to_compare_but_still_ranks() -> None:

@@ -90,6 +90,11 @@ class ScoreComponent(BaseModel):
     effective_weight: float  # nominal renormalised over available components; 0 when unavailable
     contribution: float | None = None  # value * effective_weight
     reason: str  # rendered from parts, never free-form LLM prose
+    # A plain-language version of `reason`, for the DPR's reader-facing
+    # columns — never internal pipeline vocabulary ("Phase 2D", "ladder
+    # rung"). Empty when `reason` is already plain enough on its own; the
+    # renderer falls back to `reason` in that case.
+    villager_reason: str = ""
     # "" when available; otherwise WHY it is missing — this drives renormalisation
     # vs. a hard capability gap.
     unavailable_kind: Literal["", "no_profile_input", "no_config_table"] = ""
@@ -137,6 +142,10 @@ class ScoredCandidate(BaseModel):
     persons_per_direct_competitor: float | None = None
 
     reasons: list[str] = Field(default_factory=list)
+    # Plain-language counterpart to `reasons`, same order/length — the DPR
+    # renders this for the entrepreneur, falling back to `reasons` only if
+    # this is empty.
+    villager_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

@@ -43,6 +43,10 @@ ITEM_QUESTIONS: dict[CollectionItem, str] = {
         "Do you have experience running or working in this trade, or a related one? "
         "Name it, or say 'none'."
     ),
+    CollectionItem.YEARS_EXPERIENCE: (
+        "How many years of experience do you have in this trade or a related one? "
+        "Say 'zero' if you're starting fresh."
+    ),
     CollectionItem.LIQUID_CASH_INR: (
         "How much cash can you put toward this — inventory, working capital, setting "
         "up? This is your available margin capital."

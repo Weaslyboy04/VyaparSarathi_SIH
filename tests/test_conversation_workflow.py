@@ -330,6 +330,13 @@ def _session_with_tier_a_satisfied() -> tuple[ConversationSession, TurnUnderstan
     session, _ = apply_understanding(
         session,
         TurnUnderstanding(
+            intent=Intent.DECLINE_SLOT, declined_slots=(SlotName.YEARS_EXPERIENCE,)
+        ),
+        turn_index=3,
+    )
+    session, _ = apply_understanding(
+        session,
+        TurnUnderstanding(
             intent=Intent.PROVIDE_INFO,
             slot_updates=(
                 SlotUpdateInput(

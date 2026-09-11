@@ -36,6 +36,19 @@ class GapReason(StrEnum):
     INPUT_REQUIRED = "input_required"  # -> "Additional input required"
     DECLINED = "declined"  # the entrepreneur was asked and declined
     AMBIGUOUS = "ambiguous"  # stated but unresolved (e.g. several "Bhagwanpur"s)
+    # An OPTIONAL scenario/sub-field that was deliberately never run for
+    # this plan (e.g. no seasonality supplied, so the "lean season" stress
+    # test has no numbers) — distinct from NO_EVIDENCE so the executive
+    # summary's gap list can exclude it: this is not a core fact missing
+    # from the report, it is a screen nobody asked for.
+    NOT_APPLICABLE = "not_applicable"
+    # A scheme parameter with no independently-cited source, but that IS
+    # already answered elsewhere in the report via DECLARED_CONFIG (e.g.
+    # interest_rate_pct is used to compute the EMI under the SIH declared
+    # financing structure). Distinct from NO_EVIDENCE so it is not
+    # double-counted as a missing fact next to genuinely unanswered
+    # parameters like subsidy_pct.
+    DECLARED_ELSEWHERE = "declared_elsewhere"
 
 
 _GAP_TEXT: dict[GapReason, str] = {
@@ -43,6 +56,11 @@ _GAP_TEXT: dict[GapReason, str] = {
     GapReason.INPUT_REQUIRED: INPUT_REQUIRED,
     GapReason.DECLINED: "The entrepreneur declined to provide this",
     GapReason.AMBIGUOUS: "Stated but unresolved — needs disambiguation",
+    GapReason.NOT_APPLICABLE: "Not applicable — this optional scenario wasn't run for this plan",
+    GapReason.DECLARED_ELSEWHERE: (
+        "Set by the SIH declared financing structure (see Financial assessment) — "
+        "not independently verified against a scheme circular"
+    ),
 }
 
 

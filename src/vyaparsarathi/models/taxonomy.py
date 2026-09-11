@@ -30,6 +30,24 @@ class BusinessCategory(StrEnum):
     STATIONERY = "stationery"
     FURNITURE = "furniture"
     BUILDING_MATERIALS = "building_materials"
+    SPORTS_GOODS = "sports_goods"
+    GYM_FITNESS = "gym_fitness"
+    PRINTING_XEROX = "printing_xerox"
+    COMPUTER_SERVICES = "computer_services"
+    WELDING_FABRICATION = "welding_fabrication"
+    CATERING = "catering"
+    EVENT_SERVICES = "event_services"
+    UTILITY_AGENCY = "utility_agency"
+    EDUCATION_SERVICES = "education_services"
+    LAUNDRY = "laundry"
+    CYCLE_REPAIR = "cycle_repair"
+    FOOTWEAR = "footwear"
+    # Generic fallback for a real, classified small trade/service this
+    # taxonomy has no tailored data for. Distinct from UNKNOWN (= "not yet
+    # classified") — OTHER_TRADE still enters scoring/discovery, just with
+    # a degraded (no `asset_relevance`/`capital_bands` row), clearly-labelled
+    # confidence rather than being dropped from the report entirely.
+    OTHER_TRADE = "other_trade"
     UNKNOWN = "unknown"
 
 

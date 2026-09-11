@@ -141,13 +141,28 @@ def _run_resolve_proposed(
     session: ConversationSession, ctx: RunContext
 ) -> tuple[ConversationSession, BaseModel]:
     text = session.slot(SlotName.PROPOSED_BUSINESS_TEXT).value
-    proposed = resolve_proposed_business(str(text) if text is not None else "")
+    raw_text = str(text) if text is not None else ""
+    proposed = resolve_proposed_business(raw_text)
     session = set_resolved_category(
         session,
         category=proposed.category if proposed.resolved else None,
         resolved=proposed.resolved,
         subtypes=tuple(proposed.subtypes),
     )
+    if not proposed.resolved and proposed.candidate_categories:
+        # Weak-but-plausible category guesses exist — ask the entrepreneur
+        # to pick one (mirrors `_run_discover`'s LOCATION_AMBIGUOUS handling
+        # below) instead of silently falling through to a blank report.
+        options = tuple(proposed.candidate_categories) + (
+            "None of these — let me describe it differently",
+        )
+        session = set_slot_ambiguous(
+            session,
+            SlotName.PROPOSED_BUSINESS_TEXT,
+            options,
+            raw_text=raw_text,
+            turn_index=session.turn_index,
+        )
     return session, proposed
 
 

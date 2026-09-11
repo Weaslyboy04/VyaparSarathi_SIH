@@ -46,6 +46,12 @@ class ProposedBusiness(BaseModel):
     raw_text: str | None = None
     resolved: bool = True
     note: str | None = None  # how it resolved, or why it did not
+    # Populated only when `resolved` is False: the best 2-4 category
+    # candidates a loosened fuzzy pass still suggests (either because
+    # several conflicted, or because none cleared the strict auto-resolve
+    # threshold/margin) — lets the conversation ask the entrepreneur to
+    # pick one instead of silently falling through to UNKNOWN.
+    candidate_categories: list[str] = Field(default_factory=list)
 
 
 class ClassifiedCompetitor(BaseModel):

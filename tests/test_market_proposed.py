@@ -37,12 +37,23 @@ def test_resolve_known_text(text: str, category: C, subtypes: list[str]) -> None
     assert pb.raw_text == text
 
 
-@pytest.mark.parametrize("text", ["spaceship parts", "", "   ", "quantum widgets", "xyzzy"])
-def test_unmappable_text_is_explicit_unknown(text: str) -> None:
+@pytest.mark.parametrize("text", ["", "   "])
+def test_empty_text_is_explicit_unknown(text: str) -> None:
     pb = resolve_proposed_business(text)
     assert pb.resolved is False
     assert pb.category is C.UNKNOWN
     assert pb.note  # explains why
+
+
+@pytest.mark.parametrize("text", ["quantum widgets", "xyzzy"])
+def test_novel_text_with_no_plausible_category_falls_back_to_generic_trade(text: str) -> None:
+    """Text that matches nothing — not even a weak fuzzy suggestion — must
+    still enter scoring rather than silently dropping the business from the
+    report (CLAUDE.md: ask/degrade, never blackout)."""
+    pb = resolve_proposed_business(text)
+    assert pb.resolved is True
+    assert pb.category is C.OTHER_TRADE
+    assert pb.note  # explains the degrade
 
 
 def test_conflicting_categories_are_unknown_not_a_guess() -> None:
@@ -111,12 +122,16 @@ def test_original_raw_text_is_preserved_verbatim_through_a_fuzzy_match() -> None
     ["spaceship parts", "quantum widgets", "xyzzy", "asdkjfh qwoeiru"],
 )
 def test_nonsense_text_does_not_fuzzy_match_anything(text: str) -> None:
-    """A genuinely unrelated phrase must stay unresolved — the fuzzy tier
-    never invents a category for something that isn't a plausible typo of
-    any known one."""
+    """A genuinely unrelated phrase must never be confidently auto-resolved
+    to a specific, wrong category — the strict fuzzy tier never invents a
+    match for something that isn't a plausible typo of any known one. It
+    may still end up UNKNOWN (with weak suggestions to disambiguate) or the
+    explicit generic-trade fallback — never a named category it doesn't
+    fit."""
     pb = resolve_proposed_business(text)
-    assert pb.resolved is False
-    assert pb.category is C.UNKNOWN
+    assert pb.category in (C.UNKNOWN, C.OTHER_TRADE)
+    if pb.category is C.UNKNOWN:
+        assert pb.resolved is False
 
 
 def test_exact_alias_match_always_wins_over_fuzzy_even_when_configured_loose() -> None:

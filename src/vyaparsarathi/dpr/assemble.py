@@ -205,9 +205,20 @@ def _collect_gaps(
         if section.status is SectionStatus.EVIDENCE_GAP and section.gap_note:
             gaps.append(f"{section.title}: {section.gap_note}")
         for pv in _walk_pvs(section):
-            if is_gap(pv):
-                suffix = f" — {pv.note}" if pv.note else ""
-                gaps.append(f"{section.title}: {pv.label} — {pv.display}{suffix}")
+            if not is_gap(pv):
+                continue
+            if pv.gap_reason in (GapReason.NOT_APPLICABLE, GapReason.DECLARED_ELSEWHERE):
+                # An optional sub-field nobody asked for (e.g. the "lean
+                # season" stress scenario with no seasonality supplied), or
+                # a scheme parameter already answered elsewhere via a
+                # declared configuration (e.g. the SIH interest rate used
+                # to compute the EMI) — both still render in place, in
+                # context, but neither is a core fact missing from this
+                # report, so neither may crowd a real gap out of the
+                # executive summary's short list.
+                continue
+            suffix = f" — {pv.note}" if pv.note else ""
+            gaps.append(f"{section.title}: {pv.label} — {pv.display}{suffix}")
     for driver in financial.missing_core_drivers:
         gaps.append(f"Financial assessment: missing core driver — {driver}")
     for name in scheme_knowledge.no_evidence_parameters:
@@ -222,6 +233,69 @@ _NEXT_ACTION_BASE = (
     "Take this report to a bank business-correspondent agent or the block office to "
     "begin scheme appraisal — the bank's own credit assessment remains authoritative."
 )
+
+# Plain-language translations of the two headline verdicts, for the summary
+# card at the top of the executive summary. Duplicated (rather than
+# imported) from `market/opportunity.py`'s similar mapping deliberately —
+# `market/` decides, `dpr/` only presents; the two must not depend on each
+# other's private wording. [tunable — wording only]
+_VERDICT_PLAIN: dict[str, str] = {
+    "proceed": "This looks like a workable plan — the evidence and the numbers line up.",
+    "proceed_with_caution": (
+        "This can work, but pay close attention to the risks in this report before committing."
+    ),
+    "adjust": "This plan needs some changes before it's solid — see the risks below.",
+    "pivot": "Consider a different business — the local evidence points to a stronger option.",
+    "insufficient_evidence": (
+        "We don't yet have enough evidence to make a clear call — see what's missing below."
+    ),
+}
+
+_FINANCE_STATUS_PLAIN: dict[str, str] = {
+    "feasible": "on the numbers you gave us, this plan can cover its loan and costs comfortably.",
+    "feasible_with_stretch": (
+        "this plan can cover its loan and costs, but with little room for a bad month."
+    ),
+    "financing_gap": (
+        "the loan and margin this plan needs don't fully add up yet — see the financial section."
+    ),
+    "cash_flow_stress": "cash flow gets tight at some point in this plan — see the financial section.",
+    "unserviceable": "on these numbers, this plan cannot reliably cover its loan repayments.",
+    "insufficient_financial_evidence": (
+        "we need a few more numbers from you before affordability can be judged."
+    ),
+}
+
+_MARKET_LABEL_PLAIN_SUMMARY: dict[str, str] = {
+    "underserved": "few or no similar businesses currently serve this area.",
+    "mixed": "there is some demand, but it's shared with existing businesses.",
+    "served": "this kind of business already serves the area reasonably well.",
+    "crowded": "there are already many similar businesses here for the market's size.",
+    "thin_market": "there may not be enough people here to reliably support it.",
+    "insufficient_evidence": "there isn't enough local data yet to judge demand here.",
+}
+
+
+def _build_plain_summary(arts: ArtifactSet) -> tuple[str, ...]:
+    lines: list[str] = []
+    rec = arts.recommendation
+    if rec is not None:
+        lines.append(_VERDICT_PLAIN.get(rec.verdict.value, rec.reason))
+
+    fin = arts.finance
+    if fin is not None:
+        detail = _FINANCE_STATUS_PLAIN.get(fin.status.value)
+        if detail is not None:
+            lines.append(f"Can you afford it? {detail.capitalize()}")
+
+    market = arts.market
+    if market is not None:
+        detail = _MARKET_LABEL_PLAIN_SUMMARY.get(market.label.value)
+        if detail is not None:
+            lines.append(f"Is the market good? {detail.capitalize()}")
+
+    lines.append(f"What next? {_NEXT_ACTION_BASE}")
+    return tuple(lines)
 
 
 def _build_executive_summary(
@@ -308,6 +382,7 @@ def _build_executive_summary(
         risks=tuple(dict.fromkeys(risks))[:6],
         next_actions=tuple(dict.fromkeys(next_actions)),
         evidence_gaps=evidence_gaps[:12],
+        plain_summary=_build_plain_summary(arts),
     )
 
 
