@@ -16,6 +16,7 @@ from vyaparsarathi.config import Settings, get_settings
 from vyaparsarathi.conversation.conversation_config import (
     DEFAULT_CONVERSATION_CONFIG,
     ConversationConfig,
+    ConversationMode,
 )
 from vyaparsarathi.database import InMemoryBusinessRepository
 from vyaparsarathi.database.repository import BusinessRepository
@@ -24,6 +25,7 @@ from vyaparsarathi.geocoding.base import Geocoder
 from vyaparsarathi.geocoding.nominatim import NominatimGeocoder
 from vyaparsarathi.knowledge.base import CorpusStore, Retriever
 from vyaparsarathi.knowledge.retrieval import LexicalRetriever
+from vyaparsarathi.llm.gemini_provider import GeminiLlmProvider
 from vyaparsarathi.llm.provider import HttpLlmProvider, LlmProvider
 from vyaparsarathi.llm.tools import RunContext
 from vyaparsarathi.sources.census.loader import CensusVillageSource
@@ -62,6 +64,7 @@ def build_default_runtime(
     *,
     repository: BusinessRepository | None = None,
     conv_cfg: ConversationConfig = DEFAULT_CONVERSATION_CONFIG,
+    mode: ConversationMode = ConversationMode.DEVELOPER,
 ) -> AdvisoryRuntime:
     """Wire the standard stack: Nominatim + a shared Overpass client + the
     Census extract + the Phase 5 corpus (+ a lexical retriever only when a
@@ -92,15 +95,40 @@ def build_default_runtime(
         repository=repo,
         retriever=retriever,
         conv_cfg=conv_cfg,
+        mode=mode,
     )
-    llm_provider: LlmProvider | None = HttpLlmProvider(s) if s.llm_enabled else None
     return AdvisoryRuntime(
         settings=s,
         run_context=ctx,
         geocoder=geocoder,
         overpass_client=overpass_client,
-        llm_provider=llm_provider,
+        llm_provider=build_llm_provider(s),
     )
 
 
-__all__ = ["AdvisoryRuntime", "build_default_runtime"]
+def build_llm_provider(settings: Settings) -> LlmProvider | None:
+    """Pick the conversational `LlmProvider` for `settings`, or `None`
+    (CLAUDE.md §3.1: `llm_enabled=False` is a fully supported mode, and so is
+    `llm_enabled=True` with no reachable provider — the pipeline still
+    answers deterministically).
+
+    * `llm_enabled=False` -> `None`.
+    * `VYAPAR_LLM_BASE_URL` set -> `HttpLlmProvider` (the generic HTTP shim).
+    * else `VYAPAR_LLM_API_KEY` set -> `GeminiLlmProvider(role="conversation")`
+      (Gemini-native, using the same `llm_*` key/model).
+    * else -> `None`, with a warning (enabled but nothing to call).
+    """
+    if not settings.llm_enabled:
+        return None
+    if settings.llm_base_url:
+        return HttpLlmProvider(settings)
+    if settings.llm_api_key is not None:
+        return GeminiLlmProvider(settings, role="conversation")
+    logger.warning(
+        "VYAPAR_LLM_ENABLED is true but neither VYAPAR_LLM_BASE_URL nor "
+        "VYAPAR_LLM_API_KEY is set; the conversation runs without an LLM provider"
+    )
+    return None
+
+
+__all__ = ["AdvisoryRuntime", "build_default_runtime", "build_llm_provider"]

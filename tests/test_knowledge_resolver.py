@@ -190,8 +190,9 @@ def test_secondary_tier_never_supplies_a_binding_rate() -> None:
         locator=ChunkLocator(section="1"),
         tier=SourceTier.SECONDARY,
         applicability=Applicability(jurisdiction=Jurisdiction(level=JurisdictionLevel.NATIONAL)),
-        reviewed_by="test",
-        reviewed_on=date(2026, 1, 15),
+        extractor_model="test-extractor",
+        verifier_model="test-verifier",
+        verified_on=date(2026, 1, 15),
     )
 
     query = ParameterQuery(names=(ParameterName.INTEREST_RATE_PCT,), as_of=_AS_OF)
@@ -202,6 +203,79 @@ def test_secondary_tier_never_supplies_a_binding_rate() -> None:
     assert res.chosen is None
     reasons = " ".join(res.rejected_reasons.values())
     assert "tier" in reasons
+
+
+# ======================================================================
+# loan-band inclusive/exclusive boundaries — MUDRA Kishor's real shape:
+# "above Rs. 50,000 and up to Rs. 5 lakh" (exclusive lower, inclusive upper)
+# ======================================================================
+
+
+def _kishor_band_param() -> object:
+    from vyaparsarathi.models.finance import Unit
+    from vyaparsarathi.models.knowledge import (
+        ChunkLocator,
+        Jurisdiction,
+        JurisdictionLevel,
+        SourceTier,
+    )
+    from vyaparsarathi.models.parameters import Applicability, SourcedParameter, ValueNormalization
+
+    return SourcedParameter(
+        parameter_id="test-mudra-kishor:loan_ceiling_inr:1",
+        name=ParameterName.LOAN_CEILING_INR,
+        value=Decimal("500000"),
+        unit=Unit.INR,
+        value_token="5 lakh",
+        normalization=ValueNormalization.LAKH_TO_INR,
+        evidence_quote="Kishor: covering loans above Rs. 50,000 and up to Rs. 5 lakh.",
+        document_id="test-mudra-kishor",
+        chunk_id="test-mudra-kishor#s2",
+        locator=ChunkLocator(section="2"),
+        tier=SourceTier.GOVT_PRIMARY,
+        applicability=Applicability(
+            jurisdiction=Jurisdiction(level=JurisdictionLevel.NATIONAL),
+            scheme="test-mudra-kishor",
+            min_loan_inr=Decimal("50000"),
+            min_loan_inr_exclusive=True,
+            max_loan_inr=Decimal("500000"),
+            max_loan_inr_exclusive=False,
+        ),
+        extractor_model="test-extractor",
+        verifier_model="test-verifier",
+        verified_on=date(2026, 1, 15),
+    )
+
+
+def _resolve_kishor_at(amount: Decimal) -> ResolutionStatus:
+    param = _kishor_band_param()
+    query = ParameterQuery(
+        names=(ParameterName.LOAN_CEILING_INR,),
+        scheme="test-mudra-kishor",
+        loan_amount_inr=amount,
+        as_of=_AS_OF,
+    )
+    res = resolve_parameters(query, [param], {})[0]
+    return res.status
+
+
+def test_loan_band_exclusive_lower_bound_rejects_the_boundary_amount() -> None:
+    # Rs. 50,000 itself is EXCLUDED ("above Rs. 50,000") — it belongs to
+    # Shishu, not Kishor.
+    assert _resolve_kishor_at(Decimal("50000")) is ResolutionStatus.NO_EVIDENCE
+
+
+def test_loan_band_exclusive_lower_bound_accepts_one_rupee_above() -> None:
+    assert _resolve_kishor_at(Decimal("50001")) is ResolutionStatus.RESOLVED
+
+
+def test_loan_band_inclusive_upper_bound_accepts_the_boundary_amount() -> None:
+    # Rs. 5,00,000 itself IS included ("up to Rs. 5 lakh").
+    assert _resolve_kishor_at(Decimal("500000")) is ResolutionStatus.RESOLVED
+
+
+def test_loan_band_inclusive_upper_bound_rejects_one_rupee_above() -> None:
+    assert _resolve_kishor_at(Decimal("500001")) is ResolutionStatus.NO_EVIDENCE
 
 
 def test_no_row_at_all_for_a_name_is_no_evidence(corpus) -> None:
@@ -262,8 +336,9 @@ def test_agreeing_documents_are_recorded_and_boost_confidence(corpus) -> None:
             jurisdiction=Jurisdiction(level=JurisdictionLevel.STATE, state="Bihar"),
             scheme="test-rural-udyog-yojana",
         ),
-        reviewed_by="test",
-        reviewed_on=date(2026, 1, 15),
+        extractor_model="test-extractor",
+        verifier_model="test-verifier",
+        verified_on=date(2026, 1, 15),
     )
 
     query = ParameterQuery(

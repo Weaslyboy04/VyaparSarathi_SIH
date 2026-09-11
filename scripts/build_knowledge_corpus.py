@@ -332,8 +332,8 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
     print(
-        "Next: scripts/build_parameter_registry.py propose, then hand-review "
-        "the resulting parameters.csv before committing it.",
+        "Next: scripts/build_parameter_registry.py extract --verified-on <date>, "
+        "then scripts/build_parameter_registry.py verify before committing parameters.csv.",
         file=sys.stderr,
     )
     return 0

@@ -1,8 +1,13 @@
 """Map the entrepreneur's proposed business onto the internal taxonomy (STEP 4).
 
 Deliberately not NLP: an exact category name, or a small alias table, plus
-recognition of known product subtype tokens. If the text maps to zero known
-categories, or to more than one conflicting category, the result is an explicit
+recognition of known product subtype tokens, is tried FIRST and always wins
+when it succeeds. Only when that pass finds ZERO matches does a deterministic
+fuzzy-typo fallback run (`rapidfuzz`, CLAUDE.md §33 — already a project
+dependency, used by `dedup/`) — and only when exactly one category is
+clearly ahead of every other (`market/proposed_config.py`'s threshold and
+margin). If the text maps to zero known categories (exactly or fuzzily), or
+to more than one conflicting category, the result is an explicit
 ``resolved=False`` / ``UNKNOWN`` — never a silent guess.
 """
 
@@ -10,7 +15,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from rapidfuzz import fuzz
+
 from vyaparsarathi.market.models import ProposedBusiness
+from vyaparsarathi.market.proposed_config import (
+    DEFAULT_PROPOSED_BUSINESS_CONFIG,
+    ProposedBusinessConfig,
+)
 from vyaparsarathi.market.relationships import KNOWN_SUBTYPES
 from vyaparsarathi.models.taxonomy import BusinessCategory as C
 from vyaparsarathi.normalization.text import normalize_name
@@ -106,6 +117,43 @@ def _clean_subtypes(tokens: Iterable[str]) -> list[str]:
     return sorted({t.strip().lower() for t in tokens if t and t.strip()})
 
 
+def _best_fuzzy_category(
+    text: str, cfg: ProposedBusinessConfig
+) -> tuple[C, tuple[str, ...]] | None:
+    """The single category `text` fuzzy-matches, if — and only if — it beats
+    every other candidate category by `cfg.fuzzy_match_margin` and clears
+    `cfg.fuzzy_match_threshold`. Scores every alias key AND every internal
+    category name, then takes the BEST score per resulting category (an
+    alias and its own category name are the same candidate, never double
+    counted as "competing"). Returns `None` — never a guess — the moment two
+    distinct categories are both plausible."""
+    best_per_category: dict[C, tuple[float, tuple[str, ...]]] = {}
+    for key, (cat, implied) in PROPOSED_ALIASES.items():
+        score = fuzz.token_sort_ratio(text, key)
+        current = best_per_category.get(cat)
+        if current is None or score > current[0]:
+            best_per_category[cat] = (score, implied)
+    for cat in C:
+        if cat is C.UNKNOWN:
+            continue
+        score = fuzz.token_sort_ratio(text, cat.value)
+        current = best_per_category.get(cat)
+        if current is None or score > current[0]:
+            best_per_category[cat] = (score, ())
+
+    if not best_per_category:  # pragma: no cover — PROPOSED_ALIASES is never empty
+        return None
+    ranked = sorted(best_per_category.items(), key=lambda kv: kv[1][0], reverse=True)
+    top_cat, (top_score, top_subtypes) = ranked[0]
+    if top_score < cfg.fuzzy_match_threshold:
+        return None
+    if len(ranked) > 1:
+        runner_up_score = ranked[1][1][0]
+        if top_score - runner_up_score < cfg.fuzzy_match_margin:
+            return None
+    return top_cat, top_subtypes
+
+
 def proposed_from_category(
     category: C, subtypes: Iterable[str] = (), raw_text: str | None = None
 ) -> ProposedBusiness:
@@ -120,11 +168,17 @@ def proposed_from_category(
     )
 
 
-def resolve_proposed_business(text: str, extra_subtypes: Iterable[str] = ()) -> ProposedBusiness:
+def resolve_proposed_business(
+    text: str,
+    extra_subtypes: Iterable[str] = (),
+    *,
+    cfg: ProposedBusinessConfig = DEFAULT_PROPOSED_BUSINESS_CONFIG,
+) -> ProposedBusiness:
     """Map free text (e.g. ``"pulses grocery store"``) onto the taxonomy.
 
     Returns ``resolved=False`` with category ``UNKNOWN`` when the text matches no
-    known category or matches several conflicting ones.
+    known category (exactly, by alias, or by a clear, unique fuzzy match) or
+    matches several conflicting ones.
     """
     raw = text
     norm = normalize_name(text)
@@ -175,6 +229,25 @@ def resolve_proposed_business(text: str, extra_subtypes: Iterable[str] = ()) -> 
         return pb
 
     if not matched_categories:
+        leftover = " ".join(t for t in tokens if t not in _STOPWORDS)
+        fuzzy_match = _best_fuzzy_category(leftover, cfg) if leftover else None
+        if fuzzy_match is not None:
+            category, implied = fuzzy_match
+            subtypes.update(implied)
+            pb = ProposedBusiness(
+                category=category,
+                subtypes=_clean_subtypes(subtypes),
+                raw_text=raw,
+                resolved=True,
+                note=(
+                    f"Resolved from text to category '{category.value}' via a fuzzy "
+                    "match (likely typo) — verify this is what was meant."
+                ),
+            )
+            logger.info(
+                "proposed %r -> %s subtypes=%s (fuzzy match)", raw, category.value, pb.subtypes
+            )
+            return pb
         note = "Could not map the proposed business to any known category."
     else:
         note = (

@@ -8,9 +8,11 @@ The corpus lives as plain, committed files under one directory (default
 * ``chunks.jsonl.gz`` (or ``chunks.jsonl``, uncompressed — tests use the plain
   form for readability; the loader accepts either) — one
   :class:`DocumentChunk` per line.
-* ``parameters.csv`` — one reviewed :class:`SourcedParameter` per row, in the
-  flattened column layout this module reads and
-  ``scripts/build_parameter_registry.py`` writes.
+* ``parameters.csv`` — one auto-published :class:`SourcedParameter` per row
+  (the dual-LLM extractor/verifier gate — never a human signature, see
+  ``scripts/build_parameter_registry.py``'s module docstring), in the
+  flattened column layout this module reads and that script's ``extract``
+  subcommand writes.
 * ``manifest.json`` — corpus build metadata (version, build timestamp).
 
 This is the file-backed, offline analogue of
@@ -99,20 +101,63 @@ _PARAM_CSV_FIELDNAMES: tuple[str, ...] = (
     "appl_categories",
     "appl_activity_kind",
     "appl_min_loan_inr",
+    "appl_min_loan_exclusive",
     "appl_max_loan_inr",
+    "appl_max_loan_exclusive",
     "appl_effective_from",
     "appl_effective_to",
     "appl_conditions",
     "reference_date",
     "is_benchmark",
-    "reviewed_by",
-    "reviewed_on",
+    "extractor_model",
+    "verifier_model",
+    "verified_on",
     "notes",
 )
 
+_LEVEL_RANK: dict[JurisdictionLevel, int] = {
+    JurisdictionLevel.NATIONAL: 0,
+    JurisdictionLevel.STATE: 1,
+    JurisdictionLevel.DISTRICT: 2,
+}
 
-def _normalize_whitespace(text: str) -> str:
+
+def normalize_whitespace(text: str) -> str:
     return " ".join(text.split())
+
+
+def quote_occurs_in_chunk(evidence_quote: str, chunk_text: str) -> bool:
+    """Whitespace-normalized substring check — the third of the three "never
+    fabricate a number" checks (module docstring). Shared by `_load_parameters`
+    (read time) and `scripts/build_parameter_registry.py` (write time), so the
+    two never drift apart."""
+    return normalize_whitespace(evidence_quote) in normalize_whitespace(chunk_text)
+
+
+def jurisdiction_exceeds_document_scope(candidate: Jurisdiction, document: Jurisdiction) -> bool:
+    """True when `candidate` claims scope its own document never asserted —
+    either strictly broader (rank-wise) than the document's own jurisdiction,
+    or a same-or-narrower-rank but disjoint branch (a Bihar-STATE document's
+    parameter claiming Karnataka, not just NATIONAL). A NATIONAL document's
+    scope is never exceeded by any candidate, since a nationwide document may
+    legitimately contain state/district-specific figures."""
+    if document.level is JurisdictionLevel.NATIONAL:
+        return False
+    if _LEVEL_RANK[candidate.level] < _LEVEL_RANK[document.level]:
+        return True  # strictly broader than its own document
+    if (
+        candidate.state is not None
+        and document.state is not None
+        and candidate.state != document.state
+    ):
+        return True
+    if (
+        document.level is JurisdictionLevel.DISTRICT
+        and candidate.level is JurisdictionLevel.DISTRICT
+        and candidate.district != document.district
+    ):
+        return True
+    return False
 
 
 def _lines(path: Path) -> Iterator[str]:
@@ -170,7 +215,9 @@ def _row_to_parameter(row: dict[str, str]) -> SourcedParameter:
         categories=categories,
         activity_kind=row.get("appl_activity_kind", "").strip(),
         min_loan_inr=_optional_decimal(row.get("appl_min_loan_inr", "")),
+        min_loan_inr_exclusive=row.get("appl_min_loan_exclusive", "").strip().lower() == "true",
         max_loan_inr=_optional_decimal(row.get("appl_max_loan_inr", "")),
+        max_loan_inr_exclusive=row.get("appl_max_loan_exclusive", "").strip().lower() == "true",
         effective_from=_optional_date(row.get("appl_effective_from", "")),
         effective_to=_optional_date(row.get("appl_effective_to", "")),
         conditions=_multi(row.get("appl_conditions", "")),
@@ -197,8 +244,9 @@ def _row_to_parameter(row: dict[str, str]) -> SourcedParameter:
         applicability=applicability,
         reference_date=_optional_date(row.get("reference_date", "")),
         is_benchmark=row.get("is_benchmark", "").strip().lower() == "true",
-        reviewed_by=row["reviewed_by"],
-        reviewed_on=date.fromisoformat(row["reviewed_on"]),
+        extractor_model=row["extractor_model"],
+        verifier_model=row["verifier_model"],
+        verified_on=date.fromisoformat(row["verified_on"]),
         notes=row.get("notes", ""),
     )
 
@@ -285,7 +333,9 @@ class FileCorpusStore:
             rejected_unverified_quote,
             rejected_unknown_chunk,
             rejected_tier_floor,
-        ) = self._load_parameters(chunks[0])
+            rejected_tier_mismatch,
+            rejected_jurisdiction_scope,
+        ) = self._load_parameters(chunks[0], documents[0])
         parse_errors += param_parse_errors
 
         documents_by_tier: dict[SourceTier, int] = {}
@@ -302,6 +352,8 @@ class FileCorpusStore:
             parameters_rejected_unverified_quote=rejected_unverified_quote,
             parameters_rejected_unknown_chunk=rejected_unknown_chunk,
             parameters_rejected_tier_floor=rejected_tier_floor,
+            parameters_rejected_tier_mismatch=rejected_tier_mismatch,
+            parameters_rejected_jurisdiction_scope=rejected_jurisdiction_scope,
             parse_errors=parse_errors,
             documents_by_tier=documents_by_tier,
             errors=errors,
@@ -362,17 +414,19 @@ class FileCorpusStore:
         return chunks, parse_errors
 
     def _load_parameters(
-        self, chunks: dict[str, DocumentChunk]
-    ) -> tuple[list[SourcedParameter], int, int, int, int]:
+        self, chunks: dict[str, DocumentChunk], documents: dict[str, DocumentRecord]
+    ) -> tuple[list[SourcedParameter], int, int, int, int, int, int]:
         path = self._dir / _PARAMETERS_FILE
         if not path.exists():
-            return [], 0, 0, 0, 0
+            return [], 0, 0, 0, 0, 0, 0
 
         loaded: list[SourcedParameter] = []
         parse_errors = 0
         rejected_unverified_quote = 0
         rejected_unknown_chunk = 0
         rejected_tier_floor = 0
+        rejected_tier_mismatch = 0
+        rejected_jurisdiction_scope = 0
 
         with path.open(encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
@@ -396,9 +450,7 @@ class FileCorpusStore:
                     )
                     continue
 
-                if _normalize_whitespace(param.evidence_quote) not in _normalize_whitespace(
-                    chunk.text
-                ):
+                if not quote_occurs_in_chunk(param.evidence_quote, chunk.text):
                     rejected_unverified_quote += 1
                     logger.warning(
                         "%s:%d: parameter %s evidence_quote not found in cited chunk %s",
@@ -422,6 +474,49 @@ class FileCorpusStore:
                     )
                     continue
 
+                # A chunk with no document is already an unknown-chunk-shaped
+                # corpus-consistency failure (defense in depth: the ETL
+                # script performs the same two checks below before ever
+                # writing a row, so this only matters if documents.jsonl was
+                # hand-edited after the fact).
+                document = documents.get(param.document_id)
+                if document is None:
+                    rejected_unknown_chunk += 1
+                    logger.warning(
+                        "%s:%d: parameter %s cites unknown document_id %r",
+                        path,
+                        row_no,
+                        param.parameter_id,
+                        param.document_id,
+                    )
+                    continue
+
+                if param.tier != document.tier:
+                    rejected_tier_mismatch += 1
+                    logger.warning(
+                        "%s:%d: parameter %s tier %s does not match its document %s's tier %s",
+                        path,
+                        row_no,
+                        param.parameter_id,
+                        param.tier.value,
+                        param.document_id,
+                        document.tier.value,
+                    )
+                    continue
+
+                if jurisdiction_exceeds_document_scope(
+                    param.applicability.jurisdiction, document.jurisdiction
+                ):
+                    rejected_jurisdiction_scope += 1
+                    logger.warning(
+                        "%s:%d: parameter %s jurisdiction exceeds its document %s's own scope",
+                        path,
+                        row_no,
+                        param.parameter_id,
+                        param.document_id,
+                    )
+                    continue
+
                 loaded.append(param)
 
         return (
@@ -430,10 +525,18 @@ class FileCorpusStore:
             rejected_unverified_quote,
             rejected_unknown_chunk,
             rejected_tier_floor,
+            rejected_tier_mismatch,
+            rejected_jurisdiction_scope,
         )
 
 
-__all__ = ["FileCorpusStore", "PARAM_CSV_FIELDNAMES"]
+__all__ = [
+    "FileCorpusStore",
+    "PARAM_CSV_FIELDNAMES",
+    "jurisdiction_exceeds_document_scope",
+    "normalize_whitespace",
+    "quote_occurs_in_chunk",
+]
 
 # Re-exported without the leading underscore: `scripts/build_parameter_registry.py`
 # writes exactly this column layout, so both sides read from one definition.

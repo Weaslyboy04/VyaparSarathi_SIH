@@ -49,6 +49,10 @@ def render_reply(session: ConversationSession, action: NextAction) -> tuple[list
         return _question_lines(action), Narrative(
             sections={"question": action.message}, generated_by={"question": "template"}
         )
+    if action.kind is NextActionKind.STAGE_FAILED:
+        return [action.message], Narrative(
+            sections={"stage_failed": action.message}, generated_by={"stage_failed": "template"}
+        )
     if action.kind in (NextActionKind.DELIVER_FINAL, NextActionKind.DELIVER_PARTIAL):
         bundle = build_bundle(session)
         return _render_summary(bundle, partial=action.kind is NextActionKind.DELIVER_PARTIAL)
@@ -66,6 +70,10 @@ def _render_summary(bundle: EvidenceBundle, *, partial: bool) -> tuple[list[str]
         lines.append(text)
         sections[name] = text
         generated_by[name] = "template"
+
+    no_data = bundle.get("market.no_discovery_data")
+    if no_data is not None:
+        add("market_coverage_gap", no_data.render)
 
     stance = bundle.get("opportunity.stance")
     if stance is not None:
@@ -141,6 +149,8 @@ def _render_summary(bundle: EvidenceBundle, *, partial: bool) -> tuple[list[str]
             "partial_notice",
             "This is a partial picture — some analysis is still incomplete or blocked.",
         )
+
+    add("report_offer", "Would you like me to generate a PDF project report?")
 
     return lines, Narrative(sections=sections, generated_by=generated_by)
 

@@ -5,11 +5,17 @@ This is the **only** module in `conversation/` allowed to construct a
 `FinancialInput` or an `EntrepreneurProfile` — enforced by
 `tests/test_conversation_purity.py`'s AST scan, mirroring
 `knowledge/plan_binding.py` being the only Phase 5 module allowed to do the
-same. It emits `InputKind.USER_PROVIDED` **only** — never `ASSUMED` (a
-missing financial driver yields `INSUFFICIENT_FINANCIAL_EVIDENCE` and a
-question, never an invented number: CLAUDE.md §30) and never `SOURCED` (that
-kind is reserved for `knowledge/plan_binding.py::bind_sourced_inputs`, which
-alone carries a real citation)."""
+same. It emits `InputKind.USER_PROVIDED` for every financial driver — never
+`SOURCED` (that kind is reserved for
+`knowledge/plan_binding.py::bind_sourced_inputs`, which alone carries a real
+citation) — with exactly **one** deliberate `ASSUMED` exception:
+`FinancingInput.promoter_cash_contribution`, derived from the entrepreneur's
+own stated liquid cash (Available Margin Capital) ONLY when no contribution
+was separately stated, under the declared SIH 10%/90% structure (an approved
+design decision, not a missing-evidence gap — see `_assumed_promoter_
+contribution`). Every OTHER missing financial driver still yields
+`INSUFFICIENT_FINANCIAL_EVIDENCE` and a question, never an invented number
+(CLAUDE.md §30)."""
 
 from __future__ import annotations
 
@@ -50,6 +56,34 @@ def _user_provided_input(slot: Slot, *, label: str, unit: Unit) -> FinancialInpu
         return None  # a TEXT-kind slot value leaking in here would be a caller bug
     return FinancialInput(
         label=label, value=value, unit=unit, kind=InputKind.USER_PROVIDED, source="profile"
+    )
+
+
+def _assumed_promoter_contribution(session: ConversationSession) -> FinancialInput | None:
+    """The one deliberate `ASSUMED` exception this module makes (see the
+    module docstring): under the declared SIH 10%/90% structure, the
+    entrepreneur's stated Available Margin Capital (liquid cash) IS their
+    promoter contribution unless they separately state a different
+    contribution figure. `None` when liquid cash itself is not stated —
+    never invented from nothing, and never derived from a physical asset
+    (CLAUDE.md §13, §14: only `LIQUID_CASH_INR` feeds this)."""
+    cash_slot = session.slot(SlotName.LIQUID_CASH_INR)
+    if cash_slot.state is not SlotState.USER_PROVIDED or not isinstance(
+        cash_slot.value, Decimal | int
+    ):
+        return None
+    return FinancialInput(
+        label="promoter_cash_contribution_inr",
+        value=cash_slot.value,
+        unit=Unit.INR,
+        kind=InputKind.ASSUMED,
+        source="config:sih_scheme",
+        rationale=(
+            "No promoter contribution was separately stated; the entrepreneur's stated "
+            "Available Margin Capital (liquid cash) is treated as the promoter's "
+            "contribution under the declared SIH 10%/90% financing structure. State a "
+            "contribution amount explicitly to override this."
+        ),
     )
 
 
@@ -134,6 +168,8 @@ def build_plan_input(
         label="promoter_cash_contribution_inr",
         unit=Unit.INR,
     )
+    if promoter_cash is None:
+        promoter_cash = _assumed_promoter_contribution(session)
 
     principal = _user_provided_input(
         session.slot(SlotName.LOAN_PRINCIPAL_INR), label="loan_principal_inr", unit=Unit.INR

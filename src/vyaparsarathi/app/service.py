@@ -20,29 +20,49 @@ from vyaparsarathi.app.dto import (
     ExpectedInput,
     MessageRequest,
     OutboundMessage,
+    ReportResult,
+    ReportStatus,
     SessionHandle,
     StartSessionRequest,
     new_session_id,
 )
 from vyaparsarathi.app.errors import SessionNotFoundError
 from vyaparsarathi.app.runtime import AdvisoryRuntime
+from vyaparsarathi.conversation.bundle import build_bundle
 from vyaparsarathi.conversation.plan_builder import build_profile
-from vyaparsarathi.conversation.planner import NextActionKind
-from vyaparsarathi.conversation.render import render_reply
+from vyaparsarathi.conversation.planner import NextActionKind, decide
+from vyaparsarathi.conversation.render import Narrative, render_reply
+from vyaparsarathi.conversation.report_intent import ReportIntent, classify_report_intent
 from vyaparsarathi.conversation.session_models import ConversationSession, StepId
 from vyaparsarathi.conversation.severity import Severity, max_severity
 from vyaparsarathi.conversation.understanding import Intent, TurnUnderstanding
 from vyaparsarathi.database.session_repository import SessionRepository
+from vyaparsarathi.llm.extraction_context import build_extraction_context
+from vyaparsarathi.llm.language_guard import (
+    CLARIFICATION_MESSAGE,
+    contains_unsupported_devanagari_numeral,
+)
 from vyaparsarathi.llm.orchestrator import run_turn
-from vyaparsarathi.llm.structured import extract_understanding
+from vyaparsarathi.llm.reply_authoring import author_reply_sections
+from vyaparsarathi.llm.structured import ExtractionOutcome, extract_understanding
 from vyaparsarathi.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+_PROVIDER_UNAVAILABLE_MESSAGE = (
+    "I'm having trouble reaching the assistant service right now — this is a "
+    "temporary problem on our end, not something wrong with your answer. "
+    "Nothing you've told me so far is lost; please try sending that again "
+    "in a moment."
+)
+_REPORT_REQUESTED_MESSAGE = "Great — preparing your PDF project report now."
+_REPORT_DECLINED_MESSAGE = 'No problem — just say "generate the report" any time you would like it.'
 
 _PHASE_BY_ACTION: dict[NextActionKind, AdvisoryPhase] = {
     NextActionKind.ASK_CONTRADICTION: AdvisoryPhase.BLOCKED,
     NextActionKind.ASK_DISAMBIGUATION: AdvisoryPhase.BLOCKED,
     NextActionKind.ASK_CLARIFICATION: AdvisoryPhase.COLLECTING,
+    NextActionKind.STAGE_FAILED: AdvisoryPhase.FAILED,
     NextActionKind.DELIVER_FINAL: AdvisoryPhase.COMPLETE,
     NextActionKind.DELIVER_PARTIAL: AdvisoryPhase.ANALYSING,
     NextActionKind.END: AdvisoryPhase.COMPLETE,
@@ -51,10 +71,15 @@ _SEVERITY_BY_ACTION: dict[NextActionKind, Severity] = {
     NextActionKind.ASK_CONTRADICTION: Severity.BLOCKED,
     NextActionKind.ASK_DISAMBIGUATION: Severity.BLOCKED,
     NextActionKind.ASK_CLARIFICATION: Severity.BLOCKED,
+    NextActionKind.STAGE_FAILED: Severity.ERROR,
     NextActionKind.DELIVER_FINAL: Severity.INFO,
     NextActionKind.DELIVER_PARTIAL: Severity.DEGRADED,
     NextActionKind.END: Severity.INFO,
 }
+# The only two `NextActionKind`s whose narrative is built from an
+# `EvidenceBundle` (`render.py::_render_summary`) — the ones reply
+# authoring can ever have anything grounded to rewrite.
+_AUTHORABLE_ACTION_KINDS = (NextActionKind.DELIVER_FINAL, NextActionKind.DELIVER_PARTIAL)
 
 
 class AdvisoryService:
@@ -84,12 +109,37 @@ class AdvisoryService:
         session = session.model_copy(update={"ended": True})
         self._sessions.save(session)
 
+    def delete_session(self, session_id: str) -> None:
+        """Unlike `end_session` (marks `ended=True`, which `decide()` then
+        answers with a terminal "this conversation has ended" forever), this
+        removes the session entirely — a channel's own "/clear"-style reset
+        command uses this so the *same* channel-scoped session id (a phone
+        number, a chat id) starts a genuinely fresh session, greeting and
+        all, on the next message, rather than staying permanently ended.
+        A no-op if the session does not exist."""
+        self._sessions.delete(session_id)
+
     def send_message(self, req: MessageRequest) -> AdvisoryReply:
         session = self._sessions.get(req.session_id)
         if session is None:
             raise SessionNotFoundError(req.session_id)
 
-        understanding, llm_used = self._understand(req)
+        report_reply = self._maybe_handle_report_intent(req, session)
+        if report_reply is not None:
+            return report_reply
+
+        if self._wants_free_text_extraction(req) and contains_unsupported_devanagari_numeral(
+            req.text
+        ):
+            return self._language_guard_reply(session)
+
+        understanding, llm_used, extraction_outcome = self._understand(req, session)
+        if extraction_outcome is ExtractionOutcome.PROVIDER_UNAVAILABLE:
+            # Distinguishes "the service is temporarily unreachable" from "I
+            # didn't understand your answer" (CLAUDE.md §25 Phase 6 Priority
+            # 6) — never consumes a turn, exactly like the language guard
+            # above, so the pending question is unchanged for a retry.
+            return self._provider_unavailable_reply(session)
         outcome = run_turn(
             session,
             understanding,
@@ -100,8 +150,29 @@ class AdvisoryService:
         self._sessions.save(outcome.session)
 
         lines, narrative = render_reply(outcome.session, outcome.action)
+        if (
+            self._runtime.settings.llm_reply_authoring_enabled
+            and self._runtime.llm_provider is not None
+            and outcome.action.kind in _AUTHORABLE_ACTION_KINDS
+        ):
+            bundle = build_bundle(outcome.session)
+            narrative = author_reply_sections(
+                narrative,
+                bundle,
+                self._runtime.llm_provider,
+                self._runtime.settings,
+                cfg=self._runtime.run_context.conv_cfg,
+            )
+            lines = list(narrative.sections.values())
+        # `NextAction.severity` (set only by the STAGE_FAILED rung) carries
+        # the specific underlying outcome's severity (BLOCKED vs ERROR,
+        # reused from `conversation/outcomes.py`) — preferred over the
+        # static per-kind default below when present.
+        action_severity = outcome.action.severity or _SEVERITY_BY_ACTION.get(
+            outcome.action.kind, Severity.INFO
+        )
         severity = max_severity(
-            _SEVERITY_BY_ACTION.get(outcome.action.kind, Severity.INFO),
+            action_severity,
             Severity.DEGRADED if outcome.session.session_warnings else Severity.INFO,
         )
         expects = self._expects_for(outcome.action.kind)
@@ -145,30 +216,162 @@ class AdvisoryService:
 
     # -- internal -----------------------------------------------------
 
-    def _understand(self, req: MessageRequest) -> tuple[TurnUnderstanding, bool]:
+    def _wants_free_text_extraction(self, req: MessageRequest) -> bool:
+        """True iff this turn will (absent any pre-check like the language
+        guard) be handed to the LLM extractor as free text — no structured
+        field, no numbered choice, non-empty text, and a provider actually
+        configured (CLAUDE.md §3.1's `llm_enabled=False` deterministic mode
+        never attempts free-text extraction at all)."""
         structured = (
-            req.slot_updates or req.asset_update or req.experience_update or req.declined_slots
+            req.slot_updates
+            or req.asset_update
+            or req.experience_update
+            or req.declined_slots
+            or req.assets_declined
+            or req.experience_declined
         )
         has_choice = req.selected_choice is not None
-
-        # llm_enabled=False (or no structured input AND no configured
-        # provider): the deterministic path. CLAUDE.md's own instruction for
-        # this mode — no arbitrary free-text extraction is attempted without
-        # an LLM; a channel must supply structured fields directly.
-        if (
+        return bool(
             not structured
             and not has_choice
             and req.text.strip()
             and self._runtime.llm_provider is not None
-        ):
-            understanding, llm_used = extract_understanding(
-                req.text, self._runtime.llm_provider, self._runtime.settings
-            )
-            return understanding.model_copy(update={"requested_step": req.requested_step}), llm_used
+        )
 
-        if req.declined_slots:
+    def _language_guard_reply(self, session: ConversationSession) -> AdvisoryReply:
+        """A message contained a Devanagari numeral we've made no decision
+        to parse (`llm/language_guard.py`) — ask for a restatement without
+        consuming a turn or touching session state at all: `decide()` here
+        is a pure, side-effect-free peek (the same one `extraction_context.py`
+        uses), so the session the user sees is untouched and their pending
+        question, if any, is unchanged for their next attempt."""
+        action = decide(
+            session,
+            TurnUnderstanding(intent=Intent.UNCLEAR),
+            cfg=self._runtime.run_context.conv_cfg,
+            mode=self._runtime.run_context.mode,
+        )
+        choices = tuple(Choice(index=i, label=o) for i, o in enumerate(action.options, start=1))
+        return AdvisoryReply(
+            session_id=session.session_id,
+            turn_index=session.turn_index,
+            messages=(OutboundMessage(text=CLARIFICATION_MESSAGE, choices=choices),),
+            expects=ExpectedInput.FREE_TEXT,
+            choices=choices,
+            state=_PHASE_BY_ACTION.get(action.kind, AdvisoryPhase.COLLECTING),
+            severity=Severity.DEGRADED,
+            narrative=Narrative(
+                sections={"language_notice": CLARIFICATION_MESSAGE},
+                generated_by={"language_notice": "template"},
+            ),
+            warnings=list(session.session_warnings),
+        )
+
+    def _provider_unavailable_reply(self, session: ConversationSession) -> AdvisoryReply:
+        """The LLM provider itself could not be reached (`ExtractionOutcome.
+        PROVIDER_UNAVAILABLE`) — tell the user plainly that the SERVICE is
+        the problem, not their answer, without consuming a turn or touching
+        session state (same pure `decide()` peek as `_language_guard_reply`,
+        so a retry sees exactly the same pending question)."""
+        action = decide(
+            session,
+            TurnUnderstanding(intent=Intent.UNCLEAR),
+            cfg=self._runtime.run_context.conv_cfg,
+            mode=self._runtime.run_context.mode,
+        )
+        choices = tuple(Choice(index=i, label=o) for i, o in enumerate(action.options, start=1))
+        return AdvisoryReply(
+            session_id=session.session_id,
+            turn_index=session.turn_index,
+            messages=(OutboundMessage(text=_PROVIDER_UNAVAILABLE_MESSAGE, choices=choices),),
+            expects=ExpectedInput.FREE_TEXT,
+            choices=choices,
+            state=_PHASE_BY_ACTION.get(action.kind, AdvisoryPhase.COLLECTING),
+            severity=Severity.DEGRADED,
+            narrative=Narrative(
+                sections={"provider_notice": _PROVIDER_UNAVAILABLE_MESSAGE},
+                generated_by={"provider_notice": "template"},
+            ),
+            warnings=list(session.session_warnings),
+        )
+
+    def _maybe_handle_report_intent(
+        self, req: MessageRequest, session: ConversationSession
+    ) -> AdvisoryReply | None:
+        """`None` on every ordinary turn. A bare "yes"/"no" only means
+        anything about a PDF report at the one moment nothing else is
+        pending — a pure `decide()` peek (same pattern as
+        `_language_guard_reply`) confirms the session is already sitting at
+        `DELIVER_FINAL`/`DELIVER_PARTIAL` before `req.text` is even looked
+        at, so this can never mis-fire mid-collection. Consumes no turn and
+        never mutates the session — actual PDF generation stays the
+        caller's job (CLAUDE.md §18, §30: DPR generation stays outside the
+        LLM/engine pipeline; `AdvisoryService` only classifies intent)."""
+        if not req.text.strip():
+            return None
+        peek = decide(
+            session,
+            TurnUnderstanding(intent=Intent.UNCLEAR),
+            cfg=self._runtime.run_context.conv_cfg,
+            mode=self._runtime.run_context.mode,
+        )
+        if peek.kind not in (NextActionKind.DELIVER_FINAL, NextActionKind.DELIVER_PARTIAL):
+            return None
+        intent = classify_report_intent(req.text)
+        if intent is ReportIntent.UNCLEAR:
+            return None
+        if intent is ReportIntent.AFFIRM:
+            status, message = ReportStatus.REQUESTED, _REPORT_REQUESTED_MESSAGE
+        else:
+            status, message = ReportStatus.DECLINED, _REPORT_DECLINED_MESSAGE
+        return AdvisoryReply(
+            session_id=session.session_id,
+            turn_index=session.turn_index,
+            messages=(OutboundMessage(text=message),),
+            expects=ExpectedInput.NONE,
+            state=_PHASE_BY_ACTION.get(peek.kind, AdvisoryPhase.COMPLETE),
+            severity=Severity.INFO,
+            narrative=Narrative(
+                sections={"report_intent": message}, generated_by={"report_intent": "template"}
+            ),
+            warnings=list(session.session_warnings),
+            report=ReportResult(status=status, message=message),
+        )
+
+    def _understand(
+        self, req: MessageRequest, session: ConversationSession
+    ) -> tuple[TurnUnderstanding, bool, ExtractionOutcome]:
+        # llm_enabled=False (or no structured input AND no configured
+        # provider): the deterministic path. CLAUDE.md's own instruction for
+        # this mode — no arbitrary free-text extraction is attempted without
+        # an LLM; a channel must supply structured fields directly.
+        if self._wants_free_text_extraction(req):
+            # `_wants_free_text_extraction` already checked this is not None;
+            # the assert only restates that invariant for mypy's narrowing,
+            # which does not cross the method boundary.
+            assert self._runtime.llm_provider is not None
+            context = build_extraction_context(
+                session,
+                cfg=self._runtime.run_context.conv_cfg,
+                mode=self._runtime.run_context.mode,
+            )
+            understanding, llm_used, outcome = extract_understanding(
+                req.text, self._runtime.llm_provider, self._runtime.settings, context=context
+            )
+            understanding = understanding.model_copy(update={"requested_step": req.requested_step})
+            return understanding, llm_used, outcome
+
+        structured = (
+            req.slot_updates
+            or req.asset_update
+            or req.experience_update
+            or req.declined_slots
+            or req.assets_declined
+            or req.experience_declined
+        )
+        if req.declined_slots or req.assets_declined or req.experience_declined:
             intent = Intent.DECLINE_SLOT
-        elif has_choice:
+        elif req.selected_choice is not None:
             intent = Intent.SELECT_CANDIDATE
         elif structured:
             intent = Intent.PROVIDE_INFO
@@ -181,11 +384,14 @@ class AdvisoryService:
                 asset_update=req.asset_update,
                 experience_update=req.experience_update,
                 declined_slots=req.declined_slots,
+                assets_declined=req.assets_declined,
+                experience_declined=req.experience_declined,
                 selected_choice=req.selected_choice,
                 requested_step=req.requested_step,
                 raw_message=req.text,
             ),
             False,
+            ExtractionOutcome.SUCCEEDED,
         )
 
     @staticmethod

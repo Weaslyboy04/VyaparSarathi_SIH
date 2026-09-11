@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
@@ -36,6 +38,57 @@ def test_as_input_kind_is_none_for_conversation_only_states() -> None:
 def test_missing_slot_value_carries_no_value() -> None:
     with pytest.raises(ValidationError):
         SlotValue(state=SlotState.MISSING, value=650_000)
+
+
+def test_decimal_value_survives_a_json_round_trip() -> None:
+    """Regression: `value: Decimal | int | str | None` is a loose union.
+    `model_dump(mode="json")` serializes a `Decimal` as a plain JSON string
+    (JSON has no numeric type precise enough for money), and pydantic's
+    union validation was accepting that string back as `str` rather than
+    coercing it to `Decimal` — an exact-type match for `str` beats a
+    `Decimal` member that needs coercion. Invisible with
+    `InMemorySessionRepository` (never round-trips), but this exact
+    degradation broke `plan_builder.py::_user_provided_input`'s
+    `isinstance(value, Decimal | int)` check through `SqlSessionRepository`
+    (a JSON column) in a live session — a revenue/margin figure that had
+    genuinely been given kept reading back as "still missing" after every
+    reload, producing an infinite ask-the-same-question loop."""
+    original = SlotValue(
+        state=SlotState.USER_PROVIDED,
+        value=Decimal("50000"),
+        raw_text="around 50 thousand rupees",
+        value_token="50 thousand",
+        source="profile",
+    )
+    restored = SlotValue.model_validate(original.model_dump(mode="json"))
+    assert isinstance(restored.value, Decimal)
+    assert restored.value == Decimal("50000")
+
+
+def test_decimal_percentage_value_survives_a_json_round_trip() -> None:
+    original = SlotValue(
+        state=SlotState.USER_PROVIDED,
+        value=Decimal("0.2"),
+        raw_text="around 20%",
+        value_token="20%",
+        source="profile",
+    )
+    restored = SlotValue.model_validate(original.model_dump(mode="json"))
+    assert isinstance(restored.value, Decimal)
+    assert restored.value == Decimal("0.2")
+
+
+def test_genuine_text_value_is_never_misread_as_a_number() -> None:
+    original = SlotValue(
+        state=SlotState.USER_PROVIDED,
+        value="a grocery shop",
+        raw_text="I want to open a grocery shop",
+        value_token="a grocery shop",
+        source="profile",
+    )
+    restored = SlotValue.model_validate(original.model_dump(mode="json"))
+    assert isinstance(restored.value, str)
+    assert restored.value == "a grocery shop"
 
 
 def test_ambiguous_requires_options() -> None:

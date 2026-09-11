@@ -44,6 +44,7 @@ STEP_INPUT_SLOTS: dict[StepId, tuple[SlotName, ...]] = {
     StepId.DEMAND_EVIDENCE: (SlotName.LOCATION_TEXT, SlotName.RADIUS_M),
     StepId.OPPORTUNITY: (SlotName.LIQUID_CASH_INR,),
     StepId.FINANCE_KNOWLEDGE: (SlotName.LOAN_PRINCIPAL_INR,),
+    StepId.SCHEME_CAPACITY: (SlotName.LIQUID_CASH_INR,),
     # The margin check compares the required-margin figure against BOTH of
     # these directly (finance/structuring.py), so a correction to either one
     # must re-run structuring even though its other inputs all arrive via
@@ -118,7 +119,7 @@ def _fingerprint_one(
         payload["experience"] = sorted(c.value for c in session.experience_categories.current.items)
     if step in (StepId.DISCOVER, StepId.DEMAND_EVIDENCE):
         payload["geocode_candidate"] = session.selected_geocode_candidate
-    if step is StepId.BUILD_PLAN or step is StepId.FINANCE_KNOWLEDGE:
+    if step in (StepId.BUILD_PLAN, StepId.FINANCE_KNOWLEDGE, StepId.SCHEME_CAPACITY):
         payload["resolved_category"] = (
             session.resolved_category.value if session.resolved_category is not None else None
         )

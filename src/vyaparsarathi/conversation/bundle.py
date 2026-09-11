@@ -28,6 +28,7 @@ from vyaparsarathi.finance.structuring_models import SchemeStructureResult, Sche
 from vyaparsarathi.market.assessment_models import MarketAssessmentResult
 from vyaparsarathi.market.opportunity_models import OpportunityAnalysisResult
 from vyaparsarathi.models.parameters import FinanceKnowledgeEvidence, ResolutionStatus
+from vyaparsarathi.models.results import DiscoveryResult, DiscoveryStatus
 
 
 class FactOrigin(StrEnum):
@@ -79,6 +80,25 @@ def _artifact(session: ConversationSession, step: StepId, model_cls: type[_M]) -
 def build_bundle(session: ConversationSession) -> EvidenceBundle:
     facts: list[Fact] = []
     citations: dict[str, str] = {}
+
+    discovery = _artifact(session, StepId.DISCOVER, DiscoveryResult)
+    if discovery is not None and discovery.status is DiscoveryStatus.NO_RESULTS:
+        # CLAUDE.md §11: absence from the data is never reported as evidence
+        # of zero competition. Surfaced unconditionally (not folded into the
+        # market-confidence percentage) so it can never be missed or read as
+        # a system failure.
+        facts.append(
+            Fact(
+                key="market.no_discovery_data",
+                label="Local business data coverage",
+                render=(
+                    "I could not observe enough nearby-business data to judge local "
+                    "competition here. This does not mean there are no competitors — "
+                    "it means this data source has no coverage in this area."
+                ),
+                origin=FactOrigin.CALCULATION,
+            )
+        )
 
     opportunity = _artifact(session, StepId.OPPORTUNITY, OpportunityAnalysisResult)
     if opportunity is not None:

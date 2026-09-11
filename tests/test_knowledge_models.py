@@ -55,8 +55,9 @@ def _parameter(**kw: object) -> SourcedParameter:
         "locator": ChunkLocator(page_from=1),
         "tier": SourceTier.GOVT_PRIMARY,
         "applicability": _applicability(),
-        "reviewed_by": "test-reviewer",
-        "reviewed_on": date(2026, 1, 1),
+        "extractor_model": "test-extractor",
+        "verifier_model": "test-verifier",
+        "verified_on": date(2026, 1, 1),
     }
     base.update(kw)
     return SourcedParameter(**base)  # type: ignore[arg-type]
@@ -98,6 +99,55 @@ def test_normalize_value_rejects_unparseable_token() -> None:
 
 def test_normalize_value_handles_thousands_separators() -> None:
     assert normalize_value("Rs. 1,50,000", ValueNormalization.AS_STATED) == Decimal("150000")
+
+
+def test_normalize_value_thousand_to_inr() -> None:
+    """The bug this fixes: '90 thousand' must become 90,000, never 90."""
+    assert normalize_value("90 thousand", ValueNormalization.THOUSAND_TO_INR) == Decimal("90000")
+
+
+def test_normalize_value_thousand_to_inr_various_phrasings() -> None:
+    assert normalize_value("90k", ValueNormalization.THOUSAND_TO_INR) == Decimal("90000")
+    assert normalize_value("9 thousand", ValueNormalization.THOUSAND_TO_INR) == Decimal("9000")
+    assert normalize_value(
+        "90 thousand rupees", ValueNormalization.THOUSAND_TO_INR
+    ) == Decimal("90000")
+    assert normalize_value("2.5 thousand", ValueNormalization.THOUSAND_TO_INR) == Decimal("2500")
+
+
+def test_normalize_value_bare_number_as_stated_is_never_inflated() -> None:
+    """'90' alone (as_stated) is Rs 90, not Rs 90,000 — no unit may be inferred."""
+    assert normalize_value("90", ValueNormalization.AS_STATED) == Decimal("90")
+
+
+def test_normalize_value_rupee_symbol_and_rs_prefix() -> None:
+    assert normalize_value("₹90,000", ValueNormalization.AS_STATED) == Decimal("90000")
+    assert normalize_value("Rs 90,000", ValueNormalization.AS_STATED) == Decimal("90000")
+    assert normalize_value("Rs. 90000", ValueNormalization.AS_STATED) == Decimal("90000")
+
+
+def test_normalize_value_lac_spelling_is_same_as_lakh() -> None:
+    """'lac' is a common alternate spelling of 'lakh' — same normalization enum,
+    since both are just a value_token + a chosen normalization; the spelling
+    itself is never inspected by normalize_value."""
+    assert normalize_value("6.5 lac", ValueNormalization.LAKH_TO_INR) == Decimal("650000")
+
+
+def test_normalize_value_percent_word_form() -> None:
+    assert normalize_value("82 percent", ValueNormalization.PERCENT_TO_RATIO) == Decimal("0.82")
+
+
+def test_normalize_value_indian_comma_grouping_2_2_3() -> None:
+    assert normalize_value("1,50,000", ValueNormalization.AS_STATED) == Decimal("150000")
+
+
+def test_normalize_value_rejects_devanagari_digits() -> None:
+    """Python's `\\d` is Unicode-aware and would otherwise silently accept
+    Devanagari digits (Decimal itself understands them too) — this system
+    has made no decision to support that script, so it must be rejected
+    explicitly, never silently misparsed as if it were an English number."""
+    with pytest.raises(FinancialInputError):
+        normalize_value("५०,०००", ValueNormalization.AS_STATED)
 
 
 # ======================================================================
@@ -243,6 +293,44 @@ def test_specificity_loan_band_specific_beats_generic() -> None:
 def test_applicability_rejects_inverted_loan_band() -> None:
     with pytest.raises(ValueError, match="max_loan_inr must not be less than"):
         _applicability(min_loan_inr=Decimal("100000"), max_loan_inr=Decimal("50000"))
+
+
+def test_applicability_min_loan_exclusive_requires_min_loan_inr() -> None:
+    with pytest.raises(ValueError, match="min_loan_inr_exclusive requires min_loan_inr"):
+        _applicability(min_loan_inr_exclusive=True)
+
+
+def test_applicability_max_loan_exclusive_requires_max_loan_inr() -> None:
+    with pytest.raises(ValueError, match="max_loan_inr_exclusive requires max_loan_inr"):
+        _applicability(max_loan_inr_exclusive=True)
+
+
+def test_applicability_rejects_empty_band_from_equal_exclusive_bounds() -> None:
+    with pytest.raises(ValueError, match="describes an empty band"):
+        _applicability(
+            min_loan_inr=Decimal("50000"),
+            min_loan_inr_exclusive=True,
+            max_loan_inr=Decimal("50000"),
+            max_loan_inr_exclusive=False,
+        )
+
+
+def test_applicability_accepts_exclusive_lower_and_inclusive_upper_band() -> None:
+    # MUDRA Kishor's real shape: "above Rs. 50,000 and up to Rs. 5 lakh".
+    a = _applicability(
+        min_loan_inr=Decimal("50000"),
+        min_loan_inr_exclusive=True,
+        max_loan_inr=Decimal("500000"),
+        max_loan_inr_exclusive=False,
+    )
+    assert a.min_loan_inr_exclusive is True
+    assert a.max_loan_inr_exclusive is False
+
+
+def test_applicability_defaults_exclusivity_to_false() -> None:
+    a = _applicability(min_loan_inr=Decimal("50000"), max_loan_inr=Decimal("500000"))
+    assert a.min_loan_inr_exclusive is False
+    assert a.max_loan_inr_exclusive is False
 
 
 def test_applicability_rejects_inverted_effective_window() -> None:

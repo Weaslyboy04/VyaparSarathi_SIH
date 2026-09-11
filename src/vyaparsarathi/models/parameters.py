@@ -1,12 +1,14 @@
 """The Phase 5 structured-parameter registry and the acquisition -> engine seam
 (CLAUDE.md §14, §15, §18, §19, §22, §23).
 
-:class:`SourcedParameter` is one human-reviewed registry row: a single financial
-fact extracted from a document chunk, carrying enough of a paper trail that the
-extraction itself is checkable rather than merely asserted (see the two
-model-validators below and ``sources/knowledge/loader.py``'s third check against
-the cited chunk's actual text). It is deliberately *not* a `FinancialInput` — it
-is the reviewed evidence a `FinancialInput` is later built from
+:class:`SourcedParameter` is one auto-published registry row: a single financial
+fact extracted from a document chunk by an extractor LLM and independently
+confirmed by a different verifier LLM (``scripts/build_parameter_registry.py
+extract``), carrying enough of a paper trail that the extraction itself is
+checkable rather than merely asserted (see the two model-validators below and
+``sources/knowledge/loader.py``'s third check against the cited chunk's actual
+text). It is deliberately *not* a `FinancialInput` — it is the reviewed evidence
+a `FinancialInput` is later built from
 (``knowledge/plan_binding.py``), because a registry row can be resolved into many
 different plans over its lifetime, while a `FinancialInput` is frozen and belongs
 to exactly one.
@@ -80,18 +82,25 @@ class ValueNormalization(StrEnum):
     AS_STATED = "as_stated"  # the printed number, unit unchanged
     PERCENT_TO_RATIO = "percent_to_ratio"  # "10%"   -> Decimal("0.10")
     PERCENT_AS_ANNUAL_RATE = "percent_as_annual_rate"  # "11.5%" -> Decimal("11.5")
+    THOUSAND_TO_INR = "thousand_to_inr"  # "90 thousand" / "90k" -> Decimal("90000")
     LAKH_TO_INR = "lakh_to_inr"  # "2.5 lakh" -> Decimal("250000")
     CRORE_TO_INR = "crore_to_inr"  # "1.2 crore" -> Decimal("12000000")
     YEARS_TO_MONTHS = "years_to_months"  # "5 years" -> 60
 
 
+_THOUSAND = Decimal("1000")
 _LAKH = Decimal("100000")
 _CRORE = Decimal("10000000")
 # Deliberately permissive about comma grouping: Indian documents group digits
 # 2-2-3 ("1,50,000"), not the Western 3-3-3 ("150,000"). Rather than encode one
 # grouping convention, this matches any digits/commas and strips every comma
 # before parsing — the grouping itself carries no information once removed.
-_NUMERAL_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+# Deliberately `[0-9]`, not `\d`: Python's `\d` is Unicode-aware by default
+# and would also match Devanagari digits (Decimal itself understands them
+# too), silently "succeeding" on a script this system has made no decision
+# to support — see `llm/language_guard.py` for the explicit detect-and-ask
+# path this forces instead (never a silent misparse).
+_NUMERAL_RE = re.compile(r"-?[0-9][0-9,]*(?:\.[0-9]+)?")
 
 
 def normalize_value(value_token: str, normalization: ValueNormalization) -> Decimal | int:
@@ -123,6 +132,8 @@ def normalize_value(value_token: str, normalization: ValueNormalization) -> Deci
         return numeral / Decimal("100")
     if normalization is ValueNormalization.PERCENT_AS_ANNUAL_RATE:
         return numeral
+    if normalization is ValueNormalization.THOUSAND_TO_INR:
+        return numeral * _THOUSAND
     if normalization is ValueNormalization.LAKH_TO_INR:
         return numeral * _LAKH
     if normalization is ValueNormalization.CRORE_TO_INR:
@@ -146,7 +157,18 @@ class Applicability(BaseModel):
     categories: tuple[BusinessCategory, ...] = ()  # empty = all categories
     activity_kind: str = ""  # verbatim, e.g. "manufacturing"; not matched against taxonomy
     min_loan_inr: Decimal | None = Field(default=None, ge=0)
+    # True = the source states a strictly-greater-than bound ("above X" —
+    # X itself does NOT qualify); False (default) = "X and above"/"at least
+    # X" — X itself DOES qualify. A band's precise inclusive/exclusive
+    # wording matters for real scheme eligibility (MUDRA's Kishor band is
+    # "above Rs. 50,000", not "Rs. 50,000 and above" — Rs. 50,000 itself is
+    # Shishu, not Kishor) — see `knowledge/resolver.py::_loan_band_ok`.
+    min_loan_inr_exclusive: bool = False
     max_loan_inr: Decimal | None = Field(default=None, ge=0)
+    # True = strictly-less-than ("less than Y"/"below Y" — Y itself does NOT
+    # qualify); False (default) = "up to Y"/"not exceeding Y" — Y itself DOES
+    # qualify.
+    max_loan_inr_exclusive: bool = False
     effective_from: date | None = None
     effective_to: date | None = None
     # Verbatim qualifiers from the document (e.g. "subject to collateral-free
@@ -156,12 +178,20 @@ class Applicability(BaseModel):
 
     @model_validator(mode="after")
     def _loan_band_shape(self) -> Applicability:
-        if (
-            self.min_loan_inr is not None
-            and self.max_loan_inr is not None
-            and self.max_loan_inr < self.min_loan_inr
-        ):
-            raise ValueError("max_loan_inr must not be less than min_loan_inr")
+        if self.min_loan_inr_exclusive and self.min_loan_inr is None:
+            raise ValueError("min_loan_inr_exclusive requires min_loan_inr to be set")
+        if self.max_loan_inr_exclusive and self.max_loan_inr is None:
+            raise ValueError("max_loan_inr_exclusive requires max_loan_inr to be set")
+        if self.min_loan_inr is not None and self.max_loan_inr is not None:
+            if self.max_loan_inr < self.min_loan_inr:
+                raise ValueError("max_loan_inr must not be less than min_loan_inr")
+            if self.max_loan_inr == self.min_loan_inr and (
+                self.min_loan_inr_exclusive or self.max_loan_inr_exclusive
+            ):
+                raise ValueError(
+                    "min_loan_inr == max_loan_inr with an exclusive bound describes an "
+                    "empty band — no amount can ever satisfy it"
+                )
         if (
             self.effective_from is not None
             and self.effective_to is not None
@@ -190,9 +220,23 @@ class Applicability(BaseModel):
 
 
 class SourcedParameter(BaseModel):
-    """One reviewed registry row — the structured evidence record. Frozen: a
-    row is not edited in place; a correction is a new row (with a new
-    ``parameter_id``) reviewed and signed again.
+    """One auto-published registry row — the structured evidence record.
+    Frozen: a row is not edited in place; a correction is a new row (with a
+    new ``parameter_id``) extracted and verified again.
+
+    A row is published only by ``scripts/build_parameter_registry.py
+    extract``'s genuinely blind dual-LLM gate: two different models —
+    extractor and verifier — each independently receive the same chunk,
+    document jurisdiction, and allowed-schema instructions, and each
+    independently return at most one candidate. Neither model is ever shown
+    the other's answer or asked to check it; the two candidates are compared
+    only after both responses are in hand, by exact deterministic
+    canonicalization (never fuzzy-matched). A row is published only when the
+    two independently produced candidates agree; any disagreement — full or
+    partial, including one side finding nothing — drops the row silently,
+    never queued for human review (see that script's module docstring for
+    the full gate). ``extractor_model``/``verifier_model`` record which two
+    models independently agreed; ``verified_on`` is the date that gate ran.
 
     Two validators enforce the first two of the three "never fabricate a
     number" checks (CLAUDE.md §3.5, §30); the third (``evidence_quote`` occurs
@@ -216,8 +260,10 @@ class SourcedParameter(BaseModel):
     applicability: Applicability
     reference_date: date | None = None  # the date the RULE describes, not retrieval
     is_benchmark: bool = False  # a sector benchmark is never a scheme rule
-    reviewed_by: str = Field(min_length=1)
-    reviewed_on: date
+    extractor_model: str = Field(min_length=1)  # e.g. "gemini-3.6-flash"
+    verifier_model: str = Field(min_length=1)  # e.g. "gemini-3.5-flash" — a DIFFERENT model
+    verified_on: date  # when the dual-LLM gate ran — an operator-stated CLI value,
+    # never a clock read (CLAUDE.md §28)
     notes: str = ""
 
     @field_validator("value", mode="before")

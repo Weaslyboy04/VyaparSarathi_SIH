@@ -23,18 +23,32 @@ free-text extraction attempted here or anywhere in this repository):
   Fails fast with a clear error if they are not set, rather than silently
   falling back to the structured path.
 
+Default mode is NORMAL: collect business, location, assets, trade experience
+and Available Margin Capital, in that order, then show one consolidated
+advisory (CLAUDE.md's "COLLECT → VALIDATE → COLLECT → ANALYSE → one advisory"
+UX). `--dev` switches to DEVELOPER mode: today's incremental
+structured-command harness, printing a (possibly partial) advisory after
+every turn — still useful for inspecting individual steps/artifacts.
+
 Run:
     ./.venv/Scripts/python.exe scripts/phase6_chat.py            # live discovery
     ./.venv/Scripts/python.exe scripts/phase6_chat.py --offline  # no network
     ./.venv/Scripts/python.exe scripts/phase6_chat.py --llm      # + LLM extraction
+    ./.venv/Scripts/python.exe scripts/phase6_chat.py --dev      # developer harness mode
 
-Commands: /reset  /state  /snapshot  /structure  /swot  /help  /quit
+Commands: /reset  /state  /snapshot  /structure  /capacity  /swot  /dpr  /help  /quit
+
+`/dpr [name]` composes a Phase 8 Detailed Project Report (PDF + JSON) from the
+current session's artifacts — no engine is re-run, no LLM is used for the
+report. Files land in `build/dpr/` (or at a name/path you give); an existing
+file is never overwritten.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,22 +58,31 @@ from vyaparsarathi.app.dto import (
     AdvisorySnapshot,
     ChannelId,
     MessageRequest,
+    ReportStatus,
     StartSessionRequest,
 )
 from vyaparsarathi.app.errors import SessionNotFoundError
-from vyaparsarathi.app.runtime import AdvisoryRuntime, build_default_runtime
+from vyaparsarathi.app.greeting import GREETING_MESSAGE
+from vyaparsarathi.app.runtime import AdvisoryRuntime, build_default_runtime, build_llm_provider
 from vyaparsarathi.app.service import AdvisoryService
 from vyaparsarathi.config import Settings, get_settings
+from vyaparsarathi.conversation.conversation_config import ConversationMode
 from vyaparsarathi.conversation.session_models import SlotName, StepId
-from vyaparsarathi.conversation.understanding import SlotUpdateInput
+from vyaparsarathi.conversation.understanding import (
+    AssetUpdateInput,
+    ExperienceUpdateInput,
+    SlotUpdateInput,
+)
 from vyaparsarathi.database.memory import InMemoryBusinessRepository
 from vyaparsarathi.database.session_memory import InMemorySessionRepository
+from vyaparsarathi.database.session_repository import SessionRepository
 from vyaparsarathi.discovery.service import DiscoveryService
-from vyaparsarathi.llm.provider import HttpLlmProvider
+from vyaparsarathi.dpr import DprArtifacts, DprOutputExistsError, DprService
 from vyaparsarathi.llm.tools import RunContext
 from vyaparsarathi.models.parameters import ValueNormalization
 from vyaparsarathi.models.place import PlaceCandidate
-from vyaparsarathi.models.taxonomy import SourceName
+from vyaparsarathi.models.profile import AssetKind
+from vyaparsarathi.models.taxonomy import BusinessCategory, SourceName
 from vyaparsarathi.sources.census.loader import CensusVillageSource
 from vyaparsarathi.sources.knowledge.loader import FileCorpusStore
 from vyaparsarathi.sources.osm.adapter import OverpassFetch
@@ -171,14 +194,30 @@ guessed or extracted from prose):
   tenure: <months>           loan tenure, e.g. "60" or "5 years"
   moratorium: <months>       moratorium period
   radius: <metres>           discovery/catchment radius in metres
-  experience: <years>        years of relevant experience
+  experience: <years>        years of relevant experience (a count; does not
+                              feed opportunity scoring -- see 'trades:' below)
+  assets: <kinds>            owned physical assets, comma-separated, e.g.
+                              "storefront, vehicle" -- or "assets: none"
+  trades: <categories>       trade/business categories you have experience
+                              in, comma-separated -- or "trades: none"
+  decline: <slot name>       explicitly decline to answer a slot (e.g.
+                              "decline: years_experience")
   <N>                        answer a numbered disambiguation (just type the number)
 Session commands:
   /reset       start a brand-new session
   /state       print slot values and which steps have run
   /snapshot    print the full AdvisorySnapshot (Phase 8 DPR contract) as JSON
-  /structure   print the STRUCTURE_FINANCE artifact, if any
+  /structure   print the STRUCTURE_FINANCE artifact, if any (needs revenue,
+               cost of goods, project cost and monthly opex to derive a
+               real project cost -- the ACTUAL business's financing split)
+  /capacity    print the SCHEME_CAPACITY artifact, if any (needs only cash --
+               the SIH headline: Available Margin Capital -> project
+               capacity -> loan, before any of the above is known)
   /swot        print the SWOT artifact, if any
+  /dpr [name]  compose a Detailed Project Report (PDF + JSON) from this
+               session's artifacts -> build/dpr/ (or <name>.pdf / a path you
+               give). Never overwrites an existing file. No engine or LLM
+               runs for the report; it only composes what already exists.
   /help        this text
   /quit        exit
 Any other line is sent as free text — without --llm, the planner will ask
@@ -190,12 +229,17 @@ def _slot_update(name: SlotName, raw_text: str, norm: ValueNormalization) -> Slo
     return SlotUpdateInput(slot=name, raw_text=raw_text, value_token=raw_text, normalization=norm)
 
 
+_THOUSAND_RE = re.compile(r"\bthousand\b|\d\s*k\b", re.IGNORECASE)
+
+
 def _money_norm(text: str) -> ValueNormalization:
     lowered = text.lower()
     if "crore" in lowered:
         return ValueNormalization.CRORE_TO_INR
     if "lakh" in lowered or "lac" in lowered:
         return ValueNormalization.LAKH_TO_INR
+    if _THOUSAND_RE.search(lowered):
+        return ValueNormalization.THOUSAND_TO_INR
     return ValueNormalization.AS_STATED
 
 
@@ -218,25 +262,65 @@ def _months_norm(text: str) -> ValueNormalization:
 
 
 class _ParsedInput:
-    __slots__ = ("slot_updates", "declined_slots", "selected_choice", "text")
+    __slots__ = (
+        "asset_update",
+        "assets_declined",
+        "declined_slots",
+        "experience_declined",
+        "experience_update",
+        "selected_choice",
+        "slot_updates",
+        "text",
+    )
 
     def __init__(
         self,
         slot_updates: tuple[SlotUpdateInput, ...] = (),
         declined_slots: tuple[SlotName, ...] = (),
+        asset_update: AssetUpdateInput | None = None,
+        experience_update: ExperienceUpdateInput | None = None,
+        assets_declined: bool = False,
+        experience_declined: bool = False,
         selected_choice: int | None = None,
         text: str = "",
     ) -> None:
         self.slot_updates = slot_updates
         self.declined_slots = declined_slots
+        self.asset_update = asset_update
+        self.experience_update = experience_update
+        self.assets_declined = assets_declined
+        self.experience_declined = experience_declined
         self.selected_choice = selected_choice
         self.text = text
 
 
+_DECLINE_WORDS = {"none", "no", "nothing", "n/a"}
+
+
+def _parse_asset_kinds(value: str) -> tuple[AssetKind, ...]:
+    """Raises `ValueError` (with the offending token) on an unknown kind —
+    the caller prints it and drops the line, same as `decline:`'s handling."""
+    return tuple(
+        AssetKind(token.strip().lower().replace(" ", "_"))
+        for token in value.split(",")
+        if token.strip()
+    )
+
+
+def _parse_categories(value: str) -> tuple[BusinessCategory, ...]:
+    return tuple(
+        BusinessCategory(token.strip().lower().replace(" ", "_"))
+        for token in value.split(",")
+        if token.strip()
+    )
+
+
 def _parse_input(line: str) -> _ParsedInput:
     """`key: value` -> exactly one `SlotUpdateInput`; `pick N` or just `N` -> a choice
-    selection; `decline: <slot>` -> a declined slot; anything else is
-    returned verbatim as free text (never interpreted here)."""
+    selection; `decline: <slot>` -> a declined slot; `assets: <kinds>` /
+    `trades: <categories>` -> an asset/experience update, or a decline if the
+    value is 'none'; anything else is returned verbatim as free text (never
+    interpreted here)."""
     stripped = line.strip()
     lowered = stripped.lower()
 
@@ -295,16 +379,104 @@ def _parse_input(line: str) -> _ParsedInput:
                 try:
                     return _ParsedInput(declined_slots=(SlotName(value.lower().replace(" ", "_")),))
                 except ValueError:
-                    print(f"unknown slot name for /decline: {value!r}", file=sys.stderr)
+                    print(
+                        f"unknown slot name for 'decline: {value}': not a recognised slot",
+                        file=sys.stderr,
+                    )
                     return _ParsedInput()
+            if key == "assets":
+                if value.lower() in _DECLINE_WORDS:
+                    return _ParsedInput(assets_declined=True)
+                try:
+                    items = _parse_asset_kinds(value)
+                except ValueError as exc:
+                    print(f"unknown asset kind in 'assets: {value}': {exc}", file=sys.stderr)
+                    return _ParsedInput()
+                if not items:
+                    return _ParsedInput()
+                return _ParsedInput(asset_update=AssetUpdateInput(items=items, raw_text=value))
+            if key == "trades":
+                if value.lower() in _DECLINE_WORDS:
+                    return _ParsedInput(experience_declined=True)
+                try:
+                    categories = _parse_categories(value)
+                except ValueError as exc:
+                    print(f"unknown business category in 'trades: {value}': {exc}", file=sys.stderr)
+                    return _ParsedInput()
+                if not categories:
+                    return _ParsedInput()
+                return _ParsedInput(
+                    experience_update=ExperienceUpdateInput(items=categories, raw_text=value)
+                )
 
     return _ParsedInput(text=stripped)
+
+
+# --- DPR generation (Phase 8) ---------------------------------------------
+
+# Module global so a test can point it at a temp directory.
+DPR_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "build" / "dpr"
+
+
+def _dpr_paths(session_id: str, arg: str, *, out_dir: Path, now: datetime) -> tuple[Path, Path]:
+    """Resolve the (pdf, json) output pair for `/dpr [arg]`.
+
+    * no arg      -> `build/dpr/dpr_<session>_<utc-stamp>.pdf` (unique; never collides)
+    * a bare name -> `build/dpr/<name>.pdf`
+    * a path / a `*.pdf` -> used as given (its sibling `.json` beside it)
+    """
+    arg = arg.strip()
+    if not arg:
+        stamp = f"{now:%Y%m%dT%H%M%S}Z_{now.microsecond:06d}"
+        pdf_path = out_dir / f"dpr_{session_id}_{stamp}.pdf"
+    else:
+        candidate = Path(arg).expanduser()
+        if candidate.suffix.lower() == ".pdf" or candidate.is_absolute() or arg != candidate.name:
+            pdf_path = (
+                candidate if candidate.suffix.lower() == ".pdf" else candidate.with_suffix(".pdf")
+            )
+        else:
+            pdf_path = out_dir / f"{arg}.pdf"
+    return pdf_path, pdf_path.with_suffix(".json")
+
+
+def build_dpr(
+    sessions: SessionRepository,
+    session_id: str,
+    arg: str = "",
+    *,
+    out_dir: Path | None = None,
+    now: datetime | None = None,
+) -> DprArtifacts:
+    """Compose a Detailed Project Report for the current session and write the
+    PDF + JSON side by side. Never overwrites (raises `DprOutputExistsError`).
+    The report is assembled deterministically from stored artifacts — no
+    engine or LLM runs here (`vyaparsarathi.dpr`)."""
+    now = now or datetime.now(UTC)
+    pdf_path, json_path = _dpr_paths(session_id, arg, out_dir=out_dir or DPR_OUTPUT_DIR, now=now)
+    return DprService(sessions).generate(
+        session_id,
+        generated_at=now,
+        pdf_path=pdf_path,
+        json_path=json_path,
+        overwrite=False,
+    )
+
+
+def _print_dpr_result(artifacts: DprArtifacts) -> None:
+    doc = artifacts.document
+    print(f"DPR generated: {doc.report_id}")
+    print(f"  recommendation : {doc.executive_summary.recommendation.display}")
+    print(f"  financial      : {doc.financial.feasibility_status.display}")
+    print(f"  evidence gaps  : {len(doc.evidence_gaps)}")
+    print(f"  PDF  : {artifacts.pdf_path.resolve()}  ({artifacts.pdf_byte_count:,} bytes)")
+    print(f"  JSON : {artifacts.json_path.resolve()}")
 
 
 # --- runtime construction ---------------------------------------------------
 
 
-def _offline_runtime(*, llm_provider: object) -> AdvisoryRuntime:
+def _offline_runtime(*, llm_provider: object, mode: ConversationMode) -> AdvisoryRuntime:
     """No network at all — the same offline-fixture style
     `scripts/phase6_demo.py` and `tests/test_app_service.py` each use."""
     settings = Settings(cache_enabled=False, census_villages_path="no-such-file.csv.gz")
@@ -325,6 +497,7 @@ def _offline_runtime(*, llm_provider: object) -> AdvisoryRuntime:
         corpus=corpus,
         repository=repo,
         retriever=None,
+        mode=mode,
     )
     return AdvisoryRuntime(
         settings=settings,
@@ -335,29 +508,40 @@ def _offline_runtime(*, llm_provider: object) -> AdvisoryRuntime:
     )
 
 
-def _build_runtime(*, offline: bool, use_llm: bool) -> AdvisoryRuntime:
+def _build_runtime(*, offline: bool, use_llm: bool, dev: bool) -> AdvisoryRuntime:
     settings = get_settings()
-    llm_ready = bool(settings.llm_enabled and settings.llm_base_url)
+    llm_ready = bool(
+        settings.llm_enabled and (settings.llm_base_url or settings.llm_api_key is not None)
+    )
     if use_llm and not llm_ready:
         raise SystemExit(
-            "error: --llm requires VYAPAR_LLM_ENABLED=true and VYAPAR_LLM_BASE_URL set in "
-            "the environment (see .env.example). Not faking natural-language extraction "
-            "without a real provider configured (CLAUDE.md §3.1)."
+            "error: --llm requires VYAPAR_LLM_ENABLED=true and either VYAPAR_LLM_BASE_URL "
+            "(generic HTTP shim) or VYAPAR_LLM_API_KEY (Gemini-native) set in the environment "
+            "(see .env.example). Not faking natural-language extraction without a real "
+            "provider configured (CLAUDE.md §3.1)."
         )
+    mode = ConversationMode.DEVELOPER if dev else ConversationMode.NORMAL
     if offline:
-        provider = HttpLlmProvider(settings) if llm_ready else None
-        return _offline_runtime(llm_provider=provider)
-    return build_default_runtime(settings)
+        # `--offline` means no network at all: an LLM provider (which would
+        # call out on free text) is wired ONLY when `--llm` is also given.
+        provider = build_llm_provider(settings) if use_llm else None
+        return _offline_runtime(llm_provider=provider, mode=mode)
+    return build_default_runtime(settings, mode=mode)
 
 
 # --- presentation ------------------------------------------------------
 
 
 def _print_reply(reply: AdvisoryReply) -> None:
+    # Every numbered option is already baked into its own message line by
+    # `conversation/render.py::_question_lines` (e.g. "1. Bhagwanpur, Bihar").
+    # `message.choices` carries the same options again, structurally, for a
+    # channel that renders choices instead of text (or validates a reply) —
+    # `to_whatsapp_messages` reads `.choices` only to decide whether to add a
+    # "reply with a number" line, never to print the options themselves. The
+    # terminal must not print the option list a second time here.
     for message in reply.messages:
         print(message.text)
-        for choice in message.choices:
-            print(f"  {choice.index}. {choice.label}")
     for warning in reply.warnings:
         print(f"[warning] {warning}")
     print(f"[{reply.state.value} / {reply.severity.value}]")
@@ -404,17 +588,24 @@ def _start_session(service: AdvisoryService) -> str:
     handle = service.start_session(
         StartSessionRequest(channel=ChannelId.CLI, started_at=datetime.now(UTC))
     )
+    print(GREETING_MESSAGE)
     print(f"session {handle.session_id} started. Type /help for commands.")
     return handle.session_id
 
 
-def run(*, offline: bool, use_llm: bool) -> int:
-    runtime = _build_runtime(offline=offline, use_llm=use_llm)
+def run(*, offline: bool, use_llm: bool, dev: bool) -> int:
+    runtime = _build_runtime(offline=offline, use_llm=use_llm, dev=dev)
     sessions = InMemorySessionRepository()
     service = AdvisoryService(sessions=sessions, runtime=runtime)
-    mode = "offline (no network)" if offline else "live discovery"
+    net_note = "offline (no network)" if offline else "live discovery"
     llm_note = "LLM extraction ON" if runtime.llm_provider is not None else "LLM extraction OFF"
-    print(f"VyaparSarathi — Phase 6 chat harness [{mode}, {llm_note}]")
+    conv_note = (
+        "DEVELOPER mode: incremental structured-command harness, today's behaviour"
+        if dev
+        else "NORMAL mode: collects then delivers one consolidated advisory (--dev for the harness)"
+    )
+    print(f"VyaparSarathi — Phase 6 chat harness [{net_note}, {llm_note}]")
+    print(conv_note)
     session_id = _start_session(service)
 
     try:
@@ -426,7 +617,8 @@ def run(*, offline: bool, use_llm: bool) -> int:
                 break
             if not line.strip():
                 continue
-            lowered = line.strip().lower()
+            stripped = line.strip()
+            lowered = stripped.lower()
 
             if lowered in ("/quit", "/exit"):
                 break
@@ -436,7 +628,20 @@ def run(*, offline: bool, use_llm: bool) -> int:
             if lowered == "/reset":
                 session_id = _start_session(service)
                 continue
-            if lowered in ("/state", "/snapshot", "/structure", "/swot"):
+            if lowered == "/dpr" or lowered.startswith("/dpr "):
+                arg = stripped[5:].strip()
+                snap = service.snapshot(session_id)
+                if snap is not None and StepId.RECOMMEND.value not in snap.artifacts:
+                    print(
+                        "[note] no recommendation has been reached yet — the report will "
+                        "contain explicit evidence-gap sections for what is still missing."
+                    )
+                try:
+                    _print_dpr_result(build_dpr(sessions, session_id, arg))
+                except DprOutputExistsError as exc:
+                    print(f"[error] {exc}")
+                continue
+            if lowered in ("/state", "/snapshot", "/structure", "/capacity", "/swot"):
                 snap = service.snapshot(session_id)
                 if snap is None:
                     print("no session state yet.")
@@ -447,6 +652,8 @@ def run(*, offline: bool, use_llm: bool) -> int:
                     print(snap.model_dump_json(indent=2))
                 elif lowered == "/structure":
                     _print_artifact(snap, StepId.STRUCTURE_FINANCE, "STRUCTURE_FINANCE")
+                elif lowered == "/capacity":
+                    _print_artifact(snap, StepId.SCHEME_CAPACITY, "SCHEME_CAPACITY")
                 else:
                     _print_artifact(snap, StepId.SWOT, "SWOT")
                 continue
@@ -459,6 +666,10 @@ def run(*, offline: bool, use_llm: bool) -> int:
                 received_at=datetime.now(UTC),
                 slot_updates=parsed.slot_updates,
                 declined_slots=parsed.declined_slots,
+                asset_update=parsed.asset_update,
+                experience_update=parsed.experience_update,
+                assets_declined=parsed.assets_declined,
+                experience_declined=parsed.experience_declined,
                 selected_choice=parsed.selected_choice,
             )
             try:
@@ -468,6 +679,15 @@ def run(*, offline: bool, use_llm: bool) -> int:
                 session_id = _start_session(service)
                 continue
             _print_reply(reply)
+            if reply.report is not None and reply.report.status is ReportStatus.REQUESTED:
+                # Same deterministic, composition-only path `/dpr` already
+                # uses — the explicit "yes, generate the report" request just
+                # triggers it automatically instead of requiring the /dpr
+                # shortcut too.
+                try:
+                    _print_dpr_result(build_dpr(sessions, session_id))
+                except DprOutputExistsError as exc:
+                    print(f"[error] {exc}")
     finally:
         runtime.close()
     return 0
@@ -483,13 +703,22 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="require and validate a configured LLM provider for free-text extraction",
     )
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help=(
+            "DEVELOPER mode: today's incremental structured-command harness (every "
+            "reply, partial included). Default is NORMAL mode: collect the minimum "
+            "required inputs, then show one consolidated advisory."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
-        return run(offline=args.offline, use_llm=args.llm)
+        return run(offline=args.offline, use_llm=args.llm, dev=args.dev)
     except SystemExit as exc:
         if isinstance(exc.code, str):
             print(exc.code, file=sys.stderr)

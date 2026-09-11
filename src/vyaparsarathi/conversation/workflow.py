@@ -130,6 +130,21 @@ STEP_SPECS: dict[StepId, StepSpec] = {
         impure=False,
         config_kwarg="cfg",
     ),
+    # The Tier 1 SIH headline calculation: Available Margin Capital alone ->
+    # feasible project capacity -> loan (`finance/capacity.py`). No
+    # `required_steps` (deliberately NOT behind BUILD_PLAN/BIND_PLAN, which
+    # need four financial drivers first) and no `required_slots` either —
+    # mirrors BUILD_PLAN/STRUCTURE_FINANCE's own convention (`required_slots`
+    # is reserved for the two hard structural blockers; a financial driver
+    # being unstated is a result the engine itself reports, here
+    # `SchemeCapacityStatus.INSUFFICIENT_EVIDENCE`, never a DAG gate). It is
+    # therefore ready from turn one, and becomes a real answer the instant
+    # `LIQUID_CASH_INR` is stated (cascade invalidation via
+    # `STEP_INPUT_SLOTS`, `conversation/artifacts.py`).
+    StepId.SCHEME_CAPACITY: StepSpec(
+        step=StepId.SCHEME_CAPACITY,
+        impure=False,
+    ),
     StepId.STRUCTURE_FINANCE: StepSpec(
         step=StepId.STRUCTURE_FINANCE,
         required_steps=(StepId.BIND_PLAN,),

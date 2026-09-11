@@ -10,6 +10,13 @@ dependencies = [
     "SQLAlchemy>=2.0",
     "rapidfuzz>=3.9",
     "Unidecode>=1.3",
+    # Phase 8 DPR rendering. Pure-Python wheels (no system libraries), the
+    # long-standing standard for programmatic PDF; its platypus layer gives
+    # auto-paginating tables with repeated header rows, page templates for a
+    # repeated header/footer + page numbers, and reflowable text — the exact
+    # feature set the DPR's "readable when a section is missing or long"
+    # requirement needs. Justified further in docs/phase-8.md.
+    "reportlab>=4,<5",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +25,7 @@ dev = [
     "respx>=0.21",
     "ruff>=0.6",
     "mypy>=1.11",
+    "pypdf>=4",  # Phase 8: read back generated PDFs in tests (text + page count)
 ]
 # Enable a real PostGIS backend later (Phase 1 works without these):
 postgis = [
@@ -63,3 +71,10 @@ warn_redundant_casts = true
 no_implicit_optional = true
 disallow_untyped_defs = false
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# reportlab ships no type stubs (and `types-reportlab` is third-party and
+# incomplete). The DPR renderer isolates all reportlab use in
+# `dpr/render_pdf.py`; treat the library as untyped there.
+module = "reportlab.*"
+ignore_missing_imports = true

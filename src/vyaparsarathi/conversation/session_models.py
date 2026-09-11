@@ -20,10 +20,10 @@ a silent replacement — the DPR (Phase 8) can show what changed and when.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from vyaparsarathi.models.finance import InputKind
 from vyaparsarathi.models.parameters import ValueNormalization
@@ -119,6 +119,33 @@ class SlotValue(BaseModel):
     calculated_from: tuple[str, ...] = ()
     set_on_turn: int = 0
 
+    @field_validator("value", mode="before")
+    @classmethod
+    def _restore_numeric_type_after_json_round_trip(cls, v: object) -> object:
+        """`Decimal | int | str` is a loose union: `model_dump(mode="json")`
+        serializes a `Decimal`/`int` value to a plain JSON string (JSON has
+        no numeric type precise enough for money), and on the way back in,
+        pydantic's union validation accepts that string as `str` rather than
+        coercing it to a number — `str` is an exact match for a JSON string,
+        so it wins over a `Decimal`/`int` member that would need coercion.
+        Silently invisible with `InMemorySessionRepository` (never
+        round-trips), but real and session-breaking with
+        `SqlSessionRepository` (JSON column): a money/percent/count slot
+        that looks `USER_PROVIDED` in every other respect stops satisfying
+        `isinstance(value, Decimal | int)` checks (e.g.
+        `plan_builder.py::_user_provided_input`), so the value is silently
+        treated as still-missing after every restart or reload — an
+        incident that produced an infinite ask-the-same-question loop in a
+        live Telegram session. A genuine text value (a business name, a
+        location string) is never a valid `Decimal`, so this never
+        misclassifies one — only a numeric-looking string is affected."""
+        if isinstance(v, str):
+            try:
+                return Decimal(v)
+            except InvalidOperation:
+                return v
+        return v
+
     @model_validator(mode="after")
     def _state_shape(self) -> SlotValue:
         if self.state in (SlotState.MISSING, SlotState.DECLINED):
@@ -183,12 +210,21 @@ class Slot(BaseModel):
 class AssetSetValue(BaseModel):
     """One snapshot of the owned-assets set (§13: assets are a *set of
     kinds*, never a single scalar `Slot` — a new asset mentioned later is a
-    union, not a correction)."""
+    union, not a correction; an explicit removal is a set difference,
+    applied by `conversation/deltas.py::apply_understanding`, never a silent
+    replace of the whole set).
+
+    ``notes`` are verbatim user phrases carrying detail a coarse `AssetKind`
+    can't ("2 cows", "100 sq ft") — accumulated alongside `items`, purely for
+    human/DPR context. **User-provided/unverified; never used in any
+    calculation** until an approved deterministic rule for turning them into
+    a financial input exists (CLAUDE.md §13, §30)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     state: SlotState
     items: frozenset[AssetKind] = frozenset()
+    notes: tuple[str, ...] = ()
     raw_text: str | None = None
     set_on_turn: int = 0
 
@@ -229,7 +265,7 @@ class ExperienceSetSlot(BaseModel):
 
 
 class StepId(StrEnum):
-    """The 17-node step DAG (`conversation/workflow.py` declares the edges;
+    """The 18-node step DAG (`conversation/workflow.py` declares the edges;
     this is just the closed set of names). `*` = impure (owns a `StepRunner`
     in `llm/tools.py` that touches network/disk); the rest are pure engine
     calls over already-acquired evidence."""
@@ -246,6 +282,7 @@ class StepId(StrEnum):
     FINANCE_KNOWLEDGE = "finance_knowledge"  # *
     BUILD_PLAN = "build_plan"
     BIND_PLAN = "bind_plan"
+    SCHEME_CAPACITY = "scheme_capacity"
     STRUCTURE_FINANCE = "structure_finance"
     ASSESS_FINANCE = "assess_finance"
     FINANCIAL_FIT = "financial_fit"
@@ -326,6 +363,23 @@ class ConversationSession(BaseModel):
         return self.slots.get(name, Slot())
 
 
+# A scalar slot counts as "known" for readiness/DAG-gating purposes in any of
+# these four states — the three `InputKind`-backed ones plus USER_PROVIDED,
+# i.e. everything except MISSING/AMBIGUOUS/DECLINED. Lives here (not
+# `conversation/planner.py`, its original home through Phase 6's first cut)
+# so `conversation/readiness.py` can depend on it without planner.py needing
+# to import readiness.py back — `planner.py` still re-exports it unchanged.
+_SATISFIED_STATES = frozenset(
+    {SlotState.USER_PROVIDED, SlotState.SOURCED, SlotState.ASSUMED, SlotState.CALCULATED}
+)
+
+
+def satisfied_slots(session: ConversationSession) -> frozenset[SlotName]:
+    return frozenset(
+        name for name, slot in session.slots.items() if slot.state in _SATISFIED_STATES
+    )
+
+
 __all__ = [
     "AssetSetSlot",
     "AssetSetValue",
@@ -342,4 +396,5 @@ __all__ = [
     "as_input_kind",
     "from_input_kind",
     "missing_slot_value",
+    "satisfied_slots",
 ]

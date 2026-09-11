@@ -3,12 +3,23 @@ Pure & offline — reads only committed fixture files, never the network."""
 
 from __future__ import annotations
 
+import csv
+import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from vyaparsarathi.models.knowledge import (
+    ChunkLocator,
+    DocumentChunk,
+    DocumentRecord,
+    Jurisdiction,
+    JurisdictionLevel,
+    SourceTier,
+)
 from vyaparsarathi.models.parameters import ParameterName
-from vyaparsarathi.sources.knowledge.loader import FileCorpusStore
+from vyaparsarathi.sources.knowledge.loader import PARAM_CSV_FIELDNAMES, FileCorpusStore
 
 FIXTURES = Path(__file__).parent / "fixtures" / "knowledge"
 
@@ -131,6 +142,126 @@ def test_corpus_store_never_raises_on_a_directory_of_garbage(tmp_path: Path) -> 
     assert report.chunks_loaded == 0
     assert report.parameters_loaded == 0
     assert report.parse_errors > 0
+
+
+# ======================================================================
+# defense-in-depth: a row inconsistent with its own document is dropped
+# ======================================================================
+
+
+def _write_minimal_corpus(
+    tmp_path: Path,
+    *,
+    doc_tier: SourceTier,
+    doc_jurisdiction: Jurisdiction,
+    param_tier: str,
+    appl_jurisdiction_level: str,
+    appl_state: str,
+) -> Path:
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    text = "The rate of interest chargeable shall be 9.5% per annum."
+    document = DocumentRecord(
+        document_id="doc-x",
+        title="Synthetic test document",
+        publisher="Fictional test publisher",
+        tier=doc_tier,
+        jurisdiction=doc_jurisdiction,
+        retrieved_at=datetime(2026, 1, 15, tzinfo=UTC),
+        content_sha256="a" * 64,
+    )
+    chunk = DocumentChunk(
+        chunk_id="doc-x#s1",
+        document_id="doc-x",
+        locator=ChunkLocator(section="1"),
+        text=text,
+        token_count=len(text.split()),
+        text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    )
+    (corpus_dir / "documents.jsonl").write_text(document.model_dump_json() + "\n", encoding="utf-8")
+    (corpus_dir / "chunks.jsonl").write_text(chunk.model_dump_json() + "\n", encoding="utf-8")
+
+    row = dict.fromkeys(PARAM_CSV_FIELDNAMES, "")
+    row.update(
+        {
+            "parameter_id": "doc-x:interest_rate_pct:1",
+            "name": "interest_rate_pct",
+            "value": "9.5",
+            "unit": "percent_per_annum",
+            "value_token": "9.5%",
+            "normalization": "percent_as_annual_rate",
+            "evidence_quote": text,
+            "document_id": "doc-x",
+            "chunk_id": "doc-x#s1",
+            "locator_section": "1",
+            "tier": param_tier,
+            "appl_jurisdiction_level": appl_jurisdiction_level,
+            "appl_jurisdiction_state": appl_state,
+            "is_benchmark": "false",
+            "extractor_model": "test-extractor",
+            "verifier_model": "test-verifier",
+            "verified_on": "2026-01-15",
+        }
+    )
+    with (corpus_dir / "parameters.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(PARAM_CSV_FIELDNAMES))
+        writer.writeheader()
+        writer.writerow(row)
+    return corpus_dir
+
+
+def test_tier_mismatch_between_parameter_and_document_is_dropped_and_counted(
+    tmp_path: Path,
+) -> None:
+    # Both public_sector_institution and govt_primary pass INTEREST_RATE_PCT's
+    # tier floor, so this isolates the tier-MATCHES-document check from the
+    # separate tier-floor check.
+    corpus_dir = _write_minimal_corpus(
+        tmp_path,
+        doc_tier=SourceTier.PUBLIC_SECTOR_INSTITUTION,
+        doc_jurisdiction=Jurisdiction(level=JurisdictionLevel.STATE, state="Bihar"),
+        param_tier="govt_primary",
+        appl_jurisdiction_level="state",
+        appl_state="Bihar",
+    )
+    store = FileCorpusStore(corpus_dir)
+    report = store.report()
+    assert report.parameters_rejected_tier_mismatch == 1
+    assert store.parameters() == []
+
+
+def test_jurisdiction_exceeding_document_scope_is_dropped_and_counted(tmp_path: Path) -> None:
+    # A same-rank but disjoint state (Karnataka) claimed by a Bihar-scoped
+    # document's parameter — the strict "not just broader" reading.
+    corpus_dir = _write_minimal_corpus(
+        tmp_path,
+        doc_tier=SourceTier.GOVT_PRIMARY,
+        doc_jurisdiction=Jurisdiction(level=JurisdictionLevel.STATE, state="Bihar"),
+        param_tier="govt_primary",
+        appl_jurisdiction_level="state",
+        appl_state="Karnataka",
+    )
+    store = FileCorpusStore(corpus_dir)
+    report = store.report()
+    assert report.parameters_rejected_jurisdiction_scope == 1
+    assert store.parameters() == []
+
+
+def test_jurisdiction_within_document_scope_is_accepted(tmp_path: Path) -> None:
+    # Sanity check for the two tests above: a matching state is NOT rejected.
+    corpus_dir = _write_minimal_corpus(
+        tmp_path,
+        doc_tier=SourceTier.GOVT_PRIMARY,
+        doc_jurisdiction=Jurisdiction(level=JurisdictionLevel.STATE, state="Bihar"),
+        param_tier="govt_primary",
+        appl_jurisdiction_level="state",
+        appl_state="Bihar",
+    )
+    store = FileCorpusStore(corpus_dir)
+    report = store.report()
+    assert report.parameters_rejected_tier_mismatch == 0
+    assert report.parameters_rejected_jurisdiction_scope == 0
+    assert len(store.parameters()) == 1
 
 
 if __name__ == "__main__":  # pragma: no cover

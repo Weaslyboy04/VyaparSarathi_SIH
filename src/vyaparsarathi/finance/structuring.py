@@ -33,6 +33,7 @@ eligibility", never an assumption pretending to be one).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 
 from vyaparsarathi.config.sih_scheme import SihSchemeConfig
@@ -73,11 +74,14 @@ _STRUCTURE_CAVEATS: tuple[str, ...] = (
 )
 
 
-def _build_loan_terms(cfg: SihSchemeConfig, *, indicated_loan_inr: Decimal) -> LoanTerms | None:
+def build_scheme_loan_terms(
+    cfg: SihSchemeConfig, *, indicated_loan_inr: Decimal
+) -> LoanTerms | None:
     """`None` when the declared scheme states only the cost split (no full
     rate/tenure/moratorium) — `LoanTerms` is all-or-nothing at construction,
     so this never returns a partially-sourced loan, mirroring
-    `knowledge/plan_binding.py::build_loan_terms`'s own convention."""
+    `knowledge/plan_binding.py::build_loan_terms`'s own convention. Public:
+    `finance/capacity.py` reuses this verbatim rather than reimplementing it."""
     if cfg.interest_rate_pct is None or cfg.tenure_months is None or cfg.moratorium_months is None:
         return None
     treatment = MoratoriumTreatment.NONE if cfg.moratorium_months == 0 else cfg.moratorium_treatment
@@ -106,13 +110,15 @@ def _build_loan_terms(cfg: SihSchemeConfig, *, indicated_loan_inr: Decimal) -> L
 def structure_financing(
     plan: FinancialPlanInput,
     *,
-    scheme_cfg: SihSchemeConfig | None,
+    scheme_cfg: SihSchemeConfig | Sequence[SihSchemeConfig] | None,
     fin_cfg: FinanceConfig = DEFAULT_FINANCE_CONFIG,
 ) -> SchemeStructureResult:
     """Derive a `SchemeStructureResult` for `plan` under the declared
-    `scheme_cfg`. `scheme_cfg=None` (the shipped default) returns
-    `NOT_CONFIGURED` without touching the plan — never a fabricated split."""
-    routing = route_scheme(plan.category, scheme_cfg)
+    `scheme_cfg` — one config, or a table of them to band-route across by
+    project cost once it is known (see `finance/scheme_router.py`).
+    `scheme_cfg=None`/`()` returns `NOT_CONFIGURED` without touching the
+    plan — never a fabricated split."""
+    routing = route_scheme(plan.category, scheme_cfg)  # presence-only: no cost yet
     if routing.status is SchemeRoutingStatus.NOT_CONFIGURED or routing.selected is None:
         return SchemeStructureResult(
             status=SchemeStructureStatus.NOT_CONFIGURED,
@@ -160,6 +166,16 @@ def structure_financing(
         plan.project_cost, working_capital_result, cfg=fin_cfg
     )
     project_cost_inr = project_cost_result.project_cost_inr
+
+    # Re-route now that a project cost is known — the real band selection
+    # (`scheme_cfg` may be a table of several declared bands). Guaranteed
+    # SELECTED: the presence gate above already confirmed something is
+    # declared, and route_scheme() with a cost always picks a covering band
+    # or, failing that, the nearest one — never NOT_CONFIGURED here.
+    routing = route_scheme(plan.category, scheme_cfg, project_cost_inr=project_cost_inr)
+    selected = routing.selected
+    assert selected is not None  # see the guarantee noted above
+    cfg = selected
 
     findings: list[StructureFinding] = []
 
@@ -270,7 +286,7 @@ def structure_financing(
         )
         indicated_loan = cfg.max_loan_inr
 
-    loan_terms = _build_loan_terms(cfg, indicated_loan_inr=indicated_loan)
+    loan_terms = build_scheme_loan_terms(cfg, indicated_loan_inr=indicated_loan)
     warnings: list[str] = []
     if loan_terms is None:
         warnings.append(
@@ -310,4 +326,4 @@ def apply_structure(
     return plan.model_copy(update={"financing": new_financing})
 
 
-__all__ = ["apply_structure", "structure_financing"]
+__all__ = ["apply_structure", "build_scheme_loan_terms", "structure_financing"]

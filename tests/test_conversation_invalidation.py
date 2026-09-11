@@ -113,7 +113,22 @@ def test_worked_example_a_cash_correction_touches_zero_impure_steps() -> None:
 
 def test_worked_example_b_category_change_survives_demand_evidence() -> None:
     """'make it cattle feed instead' — DEMAND_EVIDENCE (category-independent)
-    survives; everything category-dependent re-runs."""
+    survives; everything category-dependent re-runs.
+
+    SCHEME_CAPACITY also survives THIS particular invalidate() call — not
+    because it is category-independent (`route_scheme` doesn't use category
+    either, but its fingerprint still echoes `resolved_category` so a stale
+    label eventually gets refreshed), but because it has no `required_steps`
+    at all (deliberate: it must be ready from turn one, off `LIQUID_CASH_INR`
+    alone, never waiting on RESOLVE_PROPOSED — see workflow.py's comment on
+    its `StepSpec`). `session.resolved_category` on the session object itself
+    only actually changes once RESOLVE_PROPOSED *runs*, not merely once its
+    fingerprint is judged stale (which is all a bare invalidate() call, with
+    no step execution, can ever observe) — so a SCHEME_CAPACITY artifact
+    survives one further turn after a category correction before its
+    (cosmetic-only; the money figures never depend on category) `category`
+    label catches up. Real execution reaches the fixed point naturally,
+    exactly like the two-pass `_seeded_session()` helper above."""
     session = _seeded_session()
     session, _ = apply_understanding(
         session,
@@ -132,6 +147,7 @@ def test_worked_example_b_category_change_survives_demand_evidence() -> None:
     )
     _, dropped = invalidate(session)
     assert StepId.DEMAND_EVIDENCE not in dropped
+    assert StepId.SCHEME_CAPACITY not in dropped
     assert StepId.RESOLVE_PROPOSED in dropped
     assert (
         StepId.DISCOVER in dropped
@@ -139,7 +155,8 @@ def test_worked_example_b_category_change_survives_demand_evidence() -> None:
     assert StepId.OPPORTUNITY_EVIDENCE in dropped
     assert StepId.OPPORTUNITY in dropped
     assert StepId.RECOMMEND in dropped
-    assert len(dropped) == len(StepId) - 1  # every step except DEMAND_EVIDENCE
+    # every step except DEMAND_EVIDENCE and SCHEME_CAPACITY (see the docstring)
+    assert len(dropped) == len(StepId) - 2
 
 
 def test_fingerprints_exclude_output_timestamps() -> None:

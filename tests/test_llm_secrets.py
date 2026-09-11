@@ -13,7 +13,7 @@ from vyaparsarathi.config.settings import Settings
 from vyaparsarathi.errors import ConfigError
 
 _SRC_DIR = Path(pkg.__file__).parent
-_ALLOWED_IN = {"provider.py"}
+_ALLOWED_IN = {"provider.py", "gemini_provider.py"}
 
 
 def test_only_provider_calls_get_secret_value() -> None:
@@ -26,7 +26,9 @@ def test_only_provider_calls_get_secret_value() -> None:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 if node.func.attr == "get_secret_value":
                     offenders.append(py.name)
-    assert not offenders, f"only llm/provider.py may call .get_secret_value(): {offenders}"
+    assert not offenders, (
+        f"only llm/provider.py and llm/gemini_provider.py may call .get_secret_value(): {offenders}"
+    )
 
 
 def test_settings_repr_does_not_leak_the_key() -> None:
@@ -50,6 +52,27 @@ def test_credential_in_base_url_is_rejected() -> None:
 
 def test_plain_base_url_is_accepted() -> None:
     Settings(llm_base_url="https://llm.example.com/v1/complete")
+
+
+def test_settings_repr_does_not_leak_the_gemini_keys() -> None:
+    settings = Settings(
+        gemini_extractor_api_key=SecretStr("extractor-secret"),
+        gemini_verifier_api_key=SecretStr("verifier-secret"),
+    )
+    assert "extractor-secret" not in repr(settings)
+    assert "extractor-secret" not in str(settings)
+    assert "verifier-secret" not in repr(settings)
+    assert "verifier-secret" not in str(settings)
+
+
+def test_settings_json_dump_does_not_leak_the_gemini_keys() -> None:
+    settings = Settings(
+        gemini_extractor_api_key=SecretStr("extractor-secret"),
+        gemini_verifier_api_key=SecretStr("verifier-secret"),
+    )
+    dumped = settings.model_dump_json()
+    assert "extractor-secret" not in dumped
+    assert "verifier-secret" not in dumped
 
 
 if __name__ == "__main__":  # pragma: no cover

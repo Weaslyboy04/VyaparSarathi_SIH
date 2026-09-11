@@ -105,5 +105,74 @@ def test_build_plan_input_emits_only_user_provided_financial_inputs() -> None:
     assert result.status is not FinancialFeasibilityStatus.INSUFFICIENT_FINANCIAL_EVIDENCE
 
 
+# --- the one deliberate ASSUMED exception: promoter contribution from cash --
+
+
+def test_liquid_cash_alone_is_assumed_as_the_promoter_contribution() -> None:
+    """SIH26091's Available Margin Capital IS the promoter's contribution
+    under the declared structure, unless a contribution is separately
+    stated — the one ASSUMED exception this module makes (see its
+    docstring)."""
+    session = _session()
+    session, _ = apply_understanding(
+        session,
+        TurnUnderstanding(
+            intent=Intent.PROVIDE_INFO,
+            slot_updates=(
+                SlotUpdateInput(
+                    slot=SlotName.LIQUID_CASH_INR,
+                    raw_text="I have 1 lakh",
+                    value_token="1 lakh",
+                    normalization=ValueNormalization.LAKH_TO_INR,
+                ),
+            ),
+        ),
+        turn_index=1,
+    )
+    plan = build_plan_input(session)
+    contribution = plan.financing.promoter_cash_contribution
+    assert contribution is not None
+    assert contribution.value == 100_000
+    assert contribution.kind is InputKind.ASSUMED
+    assert contribution.source == "config:sih_scheme"
+    assert contribution.rationale
+
+
+def test_a_separately_stated_contribution_is_never_overridden_by_cash() -> None:
+    session = _session()
+    session, _ = apply_understanding(
+        session,
+        TurnUnderstanding(
+            intent=Intent.PROVIDE_INFO,
+            slot_updates=(
+                SlotUpdateInput(
+                    slot=SlotName.LIQUID_CASH_INR,
+                    raw_text="I have 1 lakh",
+                    value_token="1 lakh",
+                    normalization=ValueNormalization.LAKH_TO_INR,
+                ),
+                SlotUpdateInput(
+                    slot=SlotName.PROMOTER_CASH_CONTRIBUTION_INR,
+                    raw_text="I'll put in 40000 of that",
+                    value_token="40000",
+                    normalization=ValueNormalization.AS_STATED,
+                ),
+            ),
+        ),
+        turn_index=1,
+    )
+    plan = build_plan_input(session)
+    contribution = plan.financing.promoter_cash_contribution
+    assert contribution is not None
+    assert contribution.value == 40_000
+    assert contribution.kind is InputKind.USER_PROVIDED
+
+
+def test_no_liquid_cash_stated_yields_no_promoter_contribution() -> None:
+    session = _session()
+    plan = build_plan_input(session)
+    assert plan.financing.promoter_cash_contribution is None
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

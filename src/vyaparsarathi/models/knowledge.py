@@ -235,6 +235,13 @@ class KnowledgeAcquisitionReport(BaseModel):
     parameters_rejected_unverified_quote: int = 0
     parameters_rejected_unknown_chunk: int = 0
     parameters_rejected_tier_floor: int = 0
+    # A row whose tier doesn't match its own document's DocumentRecord.tier,
+    # or whose applicability.jurisdiction claims broader/mismatched scope
+    # than its own document ever asserted — defense-in-depth against a
+    # documents.jsonl hand-edit made without re-running extraction (see
+    # sources/knowledge/loader.py's jurisdiction_exceeds_document_scope).
+    parameters_rejected_tier_mismatch: int = 0
+    parameters_rejected_jurisdiction_scope: int = 0
     parse_errors: int = 0
     documents_by_tier: dict[SourceTier, int] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)

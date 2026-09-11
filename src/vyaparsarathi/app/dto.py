@@ -32,6 +32,7 @@ class ChannelId(StrEnum):
 
     CLI = "cli"
     WHATSAPP = "whatsapp"
+    TELEGRAM = "telegram"
     WEB = "web"
     TEST = "test"
 
@@ -48,6 +49,27 @@ class AdvisoryPhase(StrEnum):
     ANALYSING = "analysing"
     COMPLETE = "complete"
     BLOCKED = "blocked"
+    FAILED = "failed"
+
+
+class ReportStatus(StrEnum):
+    """Channel-neutral signal for the explicit "would you like a PDF
+    report?" flow (CLAUDE.md §25 Phase 6/8). `AdvisoryService` never writes a
+    file itself — `REQUESTED` only tells the caller (CLI today; a future
+    WhatsApp transport) that the user just asked for one, so it can invoke
+    `DprService` itself and map the result onto whatever the channel can
+    deliver (a printed path today; a document attachment later)."""
+
+    NOT_REQUESTED = "not_requested"  # no report intent was classified this turn
+    REQUESTED = "requested"  # the caller should generate + deliver the report now
+    DECLINED = "declined"  # the user said not now; nothing to do
+
+
+class ReportResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: ReportStatus
+    message: str = ""
 
 
 class Choice(BaseModel):
@@ -102,6 +124,11 @@ class MessageRequest(BaseModel):
     asset_update: AssetUpdateInput | None = None
     experience_update: ExperienceUpdateInput | None = None
     declined_slots: tuple[SlotName, ...] = ()
+    # The decline path for the two set-valued profile facts — `declined_slots`
+    # above is `SlotName`-typed and can't name either (see
+    # `understanding.TurnUnderstanding`'s matching fields).
+    assets_declined: bool = False
+    experience_declined: bool = False
     selected_choice: int | None = None
     requested_step: StepId | None = None
 
@@ -118,6 +145,9 @@ class AdvisoryReply(BaseModel):
     severity: Severity = Severity.INFO
     narrative: Narrative = Field(default_factory=Narrative)
     warnings: list[str] = Field(default_factory=list)
+    # Set only on the turn a report-intent reply is classified (see
+    # `report_intent.py`); `None` on every ordinary turn.
+    report: ReportResult | None = None
 
 
 class AdvisorySnapshot(BaseModel):
@@ -155,6 +185,8 @@ __all__ = [
     "ExpectedInput",
     "MessageRequest",
     "OutboundMessage",
+    "ReportResult",
+    "ReportStatus",
     "SessionHandle",
     "StartSessionRequest",
     "new_session_id",

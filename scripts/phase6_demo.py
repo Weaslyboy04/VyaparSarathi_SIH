@@ -8,26 +8,34 @@ path — no LLM provider is constructed anywhere in this script, and no
 network call is made (a fake geocoder / Overpass client / Census / knowledge
 corpus stand in, the same style `tests/test_app_service.py` uses).
 
-Two transcripts, matching `phase5_demo.py`'s honesty posture:
+Three transcripts, matching `phase5_demo.py`'s honesty posture:
 
-* **A** — against an EMPTY knowledge corpus (what this repository ships by
-  default). Every scheme parameter resolves `NO_EVIDENCE`; no interest rate,
-  tenure, or margin appears anywhere in the narrative. This is not a bug —
-  refusing to invent a scheme rule is the feature CLAUDE.md §32 asks this
-  system to demonstrate.
+* **A** — against an EMPTY knowledge corpus (what `data/knowledge/` ships by
+  default). Every RAG-retrieved scheme parameter resolves `NO_EVIDENCE`; no
+  Phase-5-sourced interest rate, tenure, or margin appears anywhere in the
+  narrative — refusing to invent a *retrieved* scheme rule is the feature
+  CLAUDE.md §32 asks this system to demonstrate. The Tier 1 SIH 10%/90%
+  structure is **declared configuration**, not a retrieved fact
+  (`config/sih_scheme.py::DEFAULT_SIH_SCHEME_TABLE`, configured out of the
+  box with the SIH26091 problem statement's own two bands — see that
+  module's docstring), so `STRUCTURE_FINANCE` still derives a real
+  margin/loan split here even with a genuinely empty corpus; the two are
+  independent, by design (CLAUDE.md §18).
 * **B** — against the visibly synthetic corpus under
   ``tests/fixtures/knowledge/`` (see its own README: no figure in it
-  describes a real Indian credit scheme). A rate resolves, a loan is built,
-  and DSCR appears — printed under an explicit "SYNTHETIC FIXTURE DATA"
-  banner, exactly as `phase5_demo.py` prints its own numbers.
-* **C** (Tier 1) — the empty knowledge corpus again, but with a demo-only
-  declared SIH financing structure set for the duration of this one
-  transcript (`config/sih_scheme.py::DEFAULT_SIH_SCHEME_CONFIG` is `None` —
-  unconfigured — everywhere else in this repository). Shows
-  `STRUCTURE_FINANCE` deriving a real margin/loan split and Phase 4 pricing a
-  real EMI/DSCR from it, printed under an explicit "ILLUSTRATIVE DEMO
-  CONFIGURATION" banner — this split is this demo script's own invented
-  number, not a retrieved or real scheme figure (CLAUDE.md §30).
+  describes a real Indian credit scheme). A RAG-resolved rate binds into a
+  loan (Phase 5's `promoter_margin_pct` etc. still cannot bind — see
+  `docs/phase-5.md`'s unsupported-parameter register), printed under an
+  explicit "SYNTHETIC FIXTURE DATA" banner, exactly as `phase5_demo.py`
+  prints its own numbers.
+* **C** — the empty knowledge corpus again, but with a demo-only,
+  single-band scheme swapped in for the duration of this one transcript
+  (`DEFAULT_SIH_SCHEME_TABLE` monkeypatched, then restored) to show the
+  override mechanism working for a deployment that wants a *different*
+  declared structure than the shipped SIH26091 bands — printed under an
+  explicit "ILLUSTRATIVE DEMO CONFIGURATION" banner; this split is this demo
+  script's own invented number, not a retrieved or real scheme figure
+  (CLAUDE.md §30).
 
 Run:  ``./.venv/Scripts/python.exe scripts/phase6_demo.py``
 """
@@ -67,8 +75,11 @@ _FIXTURES_KNOWLEDGE = Path(__file__).resolve().parent.parent / "tests" / "fixtur
 
 # Demo-only — set for the duration of `run_transcript_with_demo_scheme` only,
 # then restored. NOT the shipped default (`config/sih_scheme.py`'s own
-# `DEFAULT_SIH_SCHEME_CONFIG` stays `None`); this split is this script's own
-# illustrative invention, never a real SIH26091 figure. [decision]
+# `DEFAULT_SIH_SCHEME_TABLE` declares the real SIH26091 micro-finance/term-loan
+# bands, used by Transcripts A and B); this single-band split is this
+# script's own illustrative invention, never a real SIH26091 figure, shown
+# only to demonstrate that a deployment can override the declared table.
+# [decision]
 _DEMO_SCHEME_CONFIG = SihSchemeConfig(
     scheme_name="Illustrative demo structure (NOT a real SIH26091 figure)",
     promoter_contribution_pct=Decimal("0.10"),
@@ -254,15 +265,16 @@ def run_transcript_with_demo_scheme(
 ) -> tuple[list[AdvisoryReply], object]:
     """Transcript C: identical Bhagwanpur scenario, but with
     `_DEMO_SCHEME_CONFIG` set on `llm.tools` for the duration of this one
-    call, then restored — the shipped default
-    (`config/sih_scheme.py::DEFAULT_SIH_SCHEME_CONFIG`) is `None` everywhere
-    else in this repository."""
-    previous = tools_module.DEFAULT_SIH_SCHEME_CONFIG
-    tools_module.DEFAULT_SIH_SCHEME_CONFIG = _DEMO_SCHEME_CONFIG
+    call, then restored — overriding the shipped default
+    (`config/sih_scheme.py::DEFAULT_SIH_SCHEME_TABLE`, the real SIH26091
+    bands used everywhere else in this repository) with a single illustrative
+    band, to demonstrate the override mechanism itself."""
+    previous = tools_module.DEFAULT_SIH_SCHEME_TABLE
+    tools_module.DEFAULT_SIH_SCHEME_TABLE = (_DEMO_SCHEME_CONFIG,)
     try:
         return run_transcript(knowledge_corpus_dir)
     finally:
-        tools_module.DEFAULT_SIH_SCHEME_CONFIG = previous
+        tools_module.DEFAULT_SIH_SCHEME_TABLE = previous
 
 
 def check_common() -> list[str]:
@@ -273,15 +285,31 @@ def check_common() -> list[str]:
     replies_a, session_a = run_transcript(_empty_corpus_dir())
     all_text_a = " ".join(m.text for r in replies_a for m in r.messages).lower()
     if "interest rate" in all_text_a or "% per annum" in all_text_a:
-        problems.append("transcript A (empty corpus) must never state an interest rate")
+        problems.append("transcript A (empty corpus) must never state a RAG-sourced interest rate")
     knowledge_a = session_a.artifacts.get(StepId.FINANCE_KNOWLEDGE)
     if knowledge_a is not None:
         resolutions = knowledge_a.payload.get("resolutions", [])
         if any(r.get("status") == "resolved" for r in resolutions):
-            problems.append("transcript A (empty corpus) must resolve zero parameters")
+            problems.append("transcript A (empty corpus) must resolve zero RAG parameters")
+    # The Tier 1 SIH structure is DECLARED CONFIGURATION, independent of the
+    # (here, deliberately empty) RAG corpus above — the shipped default
+    # (`DEFAULT_SIH_SCHEME_TABLE`) must still structure a real split from it.
     structure_a = session_a.artifacts.get(StepId.STRUCTURE_FINANCE)
-    if structure_a is not None and structure_a.payload.get("status") == "structured":
-        problems.append("transcript A (unconfigured scheme) must never structure a financing split")
+    if structure_a is None or structure_a.payload.get("status") != "structured":
+        problems.append(
+            "transcript A (shipped SIH26091 scheme table, empty RAG corpus) must still "
+            "structure a financing split from declared configuration"
+        )
+    elif structure_a.payload.get("scheme_name") != "Term Loan":
+        problems.append(
+            f"transcript A structured against {structure_a.payload.get('scheme_name')!r}, "
+            "expected the shipped 'Term Loan' band for this fixture's project cost"
+        )
+    capacity_a = session_a.artifacts.get(StepId.SCHEME_CAPACITY)
+    if capacity_a is None or capacity_a.payload.get("status") != "calculated":
+        problems.append(
+            "transcript A must derive a SCHEME_CAPACITY answer from stated liquid cash alone"
+        )
     if "illustrative demo structure" in all_text_a:
         problems.append("transcript A must never leak Transcript C's demo scheme name")
 
@@ -295,12 +323,22 @@ def check_common() -> list[str]:
     structure_c = session_c.artifacts.get(StepId.STRUCTURE_FINANCE)
     if structure_c is None or structure_c.payload.get("status") != "structured":
         problems.append("transcript C (demo scheme configured) must structure a financing split")
+    elif structure_c.payload.get("scheme_name") != _DEMO_SCHEME_CONFIG.scheme_name:
+        problems.append(
+            f"transcript C structured against {structure_c.payload.get('scheme_name')!r}, "
+            "expected the overriding _DEMO_SCHEME_CONFIG to have been used"
+        )
     # After Transcript C's demo-scheme monkeypatch is restored, a fresh
-    # (unrelated) run must go straight back to unconfigured — the module
-    # global must never leak across calls.
+    # (unrelated) run must go straight back to the real shipped SIH26091
+    # table — the module global must never leak the demo override across
+    # calls (it may, correctly, still structure — via the real 'Term Loan'
+    # band — just never via the demo's illustrative scheme name).
     _replies_after, session_after = run_transcript(_empty_corpus_dir())
     structure_after = session_after.artifacts.get(StepId.STRUCTURE_FINANCE)
-    if structure_after is not None and structure_after.payload.get("status") == "structured":
+    if (
+        structure_after is not None
+        and structure_after.payload.get("scheme_name") == _DEMO_SCHEME_CONFIG.scheme_name
+    ):
         problems.append("the demo scheme leaked past run_transcript_with_demo_scheme's cleanup")
 
     return problems
@@ -326,6 +364,12 @@ def main(argv: list[str] | None = None) -> int:
     del argv
     print("VyaparSarathi — Phase 6 demo (Bhagwanpur, Bihar; CLAUDE.md §31 scenario)")
 
+    print(
+        "\n*** SIH26091 DECLARED STRUCTURE BELOW — config/sih_scheme.py::"
+        "DEFAULT_SIH_SCHEME_TABLE (Micro Finance / Term Loan, both shipped configured); "
+        "the knowledge corpus below is nonetheless genuinely empty, so no RAG-retrieved "
+        "figure appears anywhere in this transcript. ***"
+    )
     replies_a, _session_a = run_transcript(_empty_corpus_dir())
     _print_transcript("Transcript A — shipped (empty) knowledge corpus", replies_a)
 
@@ -338,13 +382,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "\n*** ILLUSTRATIVE DEMO CONFIGURATION BELOW — this margin/loan split and rate "
-        "are this script's own invented demo values (see _DEMO_SCHEME_CONFIG above), set "
-        "only for this transcript; the shipped default (config/sih_scheme.py) is "
-        "unconfigured. Not a real SIH26091 figure. ***"
+        "are this script's own invented demo values (see _DEMO_SCHEME_CONFIG above), "
+        "overriding the shipped SIH26091 table only for this one transcript, to "
+        "demonstrate that a deployment CAN declare a different structure. Not a real "
+        "SIH26091 figure. ***"
     )
     replies_c, _session_c = run_transcript_with_demo_scheme(_empty_corpus_dir())
     _print_transcript(
-        "Transcript C — Tier 1 SIH financing structure (illustrative demo config)", replies_c
+        "Transcript C — Tier 1 SIH financing structure (illustrative override demo)", replies_c
     )
 
     problems = check_common()

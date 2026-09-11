@@ -61,6 +61,7 @@ class SlotSpec(BaseModel):
 
 _MONEY_NORMS = (
     ValueNormalization.AS_STATED,
+    ValueNormalization.THOUSAND_TO_INR,
     ValueNormalization.LAKH_TO_INR,
     ValueNormalization.CRORE_TO_INR,
 )
@@ -188,34 +189,86 @@ def apply_understanding(
         touched.append(name)
 
     assets = session.assets
-    if understanding.asset_update is not None:
-        merged = frozenset(assets.current.items) | frozenset(understanding.asset_update.items)
+    if understanding.asset_update is not None or understanding.assets_removed:
+        # Additions apply first, then removals — so a turn that both adds
+        # and removes (unlikely, but never disallowed) nets correctly rather
+        # than depending on field order. A removal is a real edit even with
+        # no addition in the same turn, so either condition alone qualifies.
+        items = frozenset(assets.current.items)
+        notes = assets.current.notes
+        raw_text = assets.current.raw_text
+        if understanding.asset_update is not None:
+            items = items | frozenset(understanding.asset_update.items)
+            notes = (*notes, *understanding.asset_update.notes)
+            raw_text = understanding.asset_update.raw_text
+        if understanding.assets_removed:
+            items = items - frozenset(understanding.assets_removed)
         assets = assets.updated(
             AssetSetValue(
                 state=SlotState.USER_PROVIDED,
-                items=merged,
-                raw_text=understanding.asset_update.raw_text,
+                items=items,
+                notes=notes,
+                raw_text=raw_text,
                 set_on_turn=turn_index,
             )
         )
+    elif understanding.assets_declined:
+        # A genuine `asset_update`/`assets_removed` always wins over a stray
+        # decline flag in the same turn (the `elif` above) — the two should
+        # never both be set by a well-formed caller, but this keeps the
+        # outcome unambiguous rather than order-dependent if one ever is.
+        assets = assets.updated(AssetSetValue(state=SlotState.DECLINED, set_on_turn=turn_index))
 
     experience = session.experience_categories
-    if understanding.experience_update is not None:
-        merged_experience = frozenset(experience.current.items) | frozenset(
-            understanding.experience_update.items
-        )
+    if understanding.experience_update is not None or understanding.experience_removed:
+        exp_items = frozenset(experience.current.items)
+        exp_raw_text = experience.current.raw_text
+        if understanding.experience_update is not None:
+            exp_items = exp_items | frozenset(understanding.experience_update.items)
+            exp_raw_text = understanding.experience_update.raw_text
+        if understanding.experience_removed:
+            exp_items = exp_items - frozenset(understanding.experience_removed)
         experience = experience.updated(
             ExperienceSetValue(
                 state=SlotState.USER_PROVIDED,
-                items=merged_experience,
-                raw_text=understanding.experience_update.raw_text,
+                items=exp_items,
+                raw_text=exp_raw_text,
                 set_on_turn=turn_index,
             )
+        )
+    elif understanding.experience_declined:
+        experience = experience.updated(
+            ExperienceSetValue(state=SlotState.DECLINED, set_on_turn=turn_index)
         )
 
     selected_geocode_candidate = session.selected_geocode_candidate
     if understanding.selected_choice is not None:
         selected_geocode_candidate = understanding.selected_choice
+        # When a choice is provided, try to resolve any pending LOCATION_TEXT
+        # ambiguity. If the choice is valid (1-based index in range of options),
+        # update the slot to USER_PROVIDED with the selected option value.
+        # If invalid, keep the slot AMBIGUOUS and record a warning.
+        location_slot = slots.get(SlotName.LOCATION_TEXT)
+        if location_slot is not None and location_slot.state is SlotState.AMBIGUOUS:
+            options = location_slot.current.options
+            choice_idx = understanding.selected_choice - 1  # 1-based to 0-based
+            if 0 <= choice_idx < len(options):
+                selected_option = options[choice_idx]
+                slots[SlotName.LOCATION_TEXT] = location_slot.updated(
+                    SlotValue(
+                        state=SlotState.USER_PROVIDED,
+                        value=selected_option,
+                        raw_text=selected_option,
+                        source="profile",
+                        set_on_turn=turn_index,
+                    )
+                )
+            else:
+                # Out of range choice: record warning, keep slot ambiguous
+                warnings.append(
+                    f"Choice {understanding.selected_choice} is out of range "
+                    f"({len(options)} option(s) available); please choose 1..{len(options)}"
+                )
 
     new_session = session.model_copy(
         update={

@@ -59,8 +59,9 @@ def _param(**kw: object) -> SourcedParameter:
         "applicability": Applicability(
             jurisdiction=Jurisdiction(level=JurisdictionLevel.STATE, state="Bihar")
         ),
-        "reviewed_by": "test",
-        "reviewed_on": date(2026, 1, 15),
+        "extractor_model": "test-extractor",
+        "verifier_model": "test-verifier",
+        "verified_on": date(2026, 1, 15),
     }
     base.update(kw)
     return SourcedParameter(**base)  # type: ignore[arg-type]

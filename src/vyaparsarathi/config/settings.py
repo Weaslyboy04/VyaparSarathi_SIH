@@ -41,7 +41,14 @@ class Settings(BaseSettings):
     http_timeout_s: float = 60.0
     http_max_retries: int = 3
     http_backoff_base_s: float = 2.0
-    user_agent: str = "VyaparSarathi/0.1 (SIH26091; contact: set-me@example.org)"
+    # Nominatim's public-instance usage policy rejects generic/placeholder
+    # identification (CLAUDE.md §6.1, §24) — this default is deliberately
+    # honest about being unconfigured rather than faking a real contact, so a
+    # 403 from the public instance is expected until VYAPAR_USER_AGENT is set.
+    user_agent: str = (
+        "VyaparSarathi/0.1 (SIH26091 hackathon prototype; "
+        "no production contact configured -- set VYAPAR_USER_AGENT)"
+    )
 
     # --- Caching ---
     cache_enabled: bool = True
@@ -88,22 +95,70 @@ class Settings(BaseSettings):
     llm_timeout_s: float = 30.0
     llm_max_retries: int = 2
     llm_backoff_base_s: float = 1.0
-    llm_max_output_tokens: int = 1024
+    llm_max_output_tokens: int = 4096  # Gemini thinking models count internal reasoning
+    # tokens against max_output_tokens; 4096 provides
+    # headroom for both thinking and output.
     llm_temperature: float = 0.2
     llm_prompt_version: str = "v1"
+    # Opt-in, default OFF: when true, `app/service.py` asks the LLM to
+    # rephrase each already-computed reply section (`llm/reply_authoring.py`)
+    # and swaps it in ONLY if it passes `conversation/grounding.py`'s check
+    # (no invented numbers, no banned phrases) — otherwise the deterministic
+    # template text is used unchanged. Extraction/pipeline correctness never
+    # depends on this; it stays fully off by default (CLAUDE.md §3.1, §30).
+    llm_reply_authoring_enabled: bool = False
 
-    @field_validator("llm_base_url")
+    # --- Phase 5 knowledge extraction: dual-Gemini extractor/verifier gate
+    # (CLAUDE.md §18, §30). Offline ETL only (`scripts/build_parameter_
+    # registry.py extract`) — never on the request path. Two independent
+    # models/keys so a disagreement between them is a meaningful signal, not
+    # the same model contradicting itself. No `gemini_base_url` field: the
+    # Gemini endpoint is a fixed, derived constant
+    # (`llm/gemini_provider.py::_GEMINI_BASE_URL`), never user-configured, so
+    # `_no_credential_in_url` below has nothing new to guard.
+    gemini_extractor_api_key: SecretStr | None = None
+    gemini_extractor_model: str = "gemini-3.6-flash"
+    gemini_verifier_api_key: SecretStr | None = None
+    gemini_verifier_model: str = "gemini-3.5-flash"
+    gemini_timeout_s: float = 60.0
+    gemini_max_retries: int = 3
+    gemini_backoff_base_s: float = 2.0
+
+    # --- Phase 7: WhatsApp channel, Meta Cloud API (CLAUDE.md §25 Phase 7).
+    # `channels/whatsapp/` never reads these directly (it must not import
+    # httpx at all, per `tests/test_channels_purity.py`) — only
+    # `scripts/whatsapp_webhook_server.py` (the live entry point) does, then
+    # injects a plain poster/transport into the pure channel code. Every
+    # field is optional; a channel that never receives `VYAPAR_WHATSAPP_*`
+    # simply never becomes available, exactly like `llm_enabled=False`.
+    whatsapp_access_token: SecretStr | None = None
+    whatsapp_phone_number_id: str = ""
+    whatsapp_business_account_id: str = ""
+    whatsapp_app_secret: SecretStr | None = None
+    whatsapp_verify_token: SecretStr | None = None
+    whatsapp_api_base_url: str = "https://graph.facebook.com/v21.0"
+
+    # --- Phase 7: Telegram channel (CLAUDE.md §25 Phase 7). Simpler than
+    # WhatsApp: `scripts/telegram_bot_server.py` long-polls, so there is no
+    # webhook secret/verify-token pair to configure at all — just the bot
+    # token from @BotFather. `channels/telegram/` stays httpx-free the same
+    # way `channels/whatsapp/` does.
+    telegram_bot_token: SecretStr | None = None
+    telegram_api_base_url: str = "https://api.telegram.org"
+
+    @field_validator("llm_base_url", "whatsapp_api_base_url", "telegram_api_base_url")
     @classmethod
     def _no_credential_in_url(cls, v: str) -> str:
         """`utils/http.py` logs the request URL at WARNING and interpolates
         it into `HttpError`'s message on failure — a credential in the query
         string would leak into logs and exceptions. The key belongs only in
-        a header, set once by `llm/provider.py::HttpLlmProvider.__init__`."""
+        a header, set once by `llm/provider.py::HttpLlmProvider.__init__`
+        (or, for WhatsApp, `scripts/whatsapp_webhook_server.py`)."""
         lowered = v.lower()
         if any(marker in lowered for marker in ("key=", "token=", "apikey=", "secret=")):
             raise ConfigError(
-                "VYAPAR_LLM_BASE_URL must not embed a credential in the query string; "
-                "set VYAPAR_LLM_API_KEY instead"
+                f"{v!r} must not embed a credential in the query string; "
+                "set the matching *_API_KEY / *_ACCESS_TOKEN variable instead"
             )
         return v
 

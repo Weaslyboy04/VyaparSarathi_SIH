@@ -19,6 +19,7 @@ from vyaparsarathi.conversation.recommendation_models import RecommendationResul
 from vyaparsarathi.conversation.session_models import StepId
 from vyaparsarathi.conversation.swot_models import SwotResult
 from vyaparsarathi.finance.assessment_models import FinancialAssessmentResult
+from vyaparsarathi.finance.capacity import SchemeCapacityResult
 from vyaparsarathi.finance.structuring_models import SchemeStructureResult
 from vyaparsarathi.market.assessment_models import MarketAssessmentResult
 from vyaparsarathi.market.demand_models import DemandSignalsResult
@@ -44,6 +45,7 @@ STEP_RESULT_MODEL: dict[StepId, type[BaseModel]] = {
     StepId.FINANCE_KNOWLEDGE: FinanceKnowledgeEvidence,
     StepId.BUILD_PLAN: FinancialPlanInput,
     StepId.BIND_PLAN: FinancialPlanInput,
+    StepId.SCHEME_CAPACITY: SchemeCapacityResult,
     StepId.STRUCTURE_FINANCE: SchemeStructureResult,
     StepId.ASSESS_FINANCE: FinancialAssessmentResult,
     StepId.FINANCIAL_FIT: FinancialFitInput,

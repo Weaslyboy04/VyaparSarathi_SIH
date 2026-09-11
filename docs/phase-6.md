@@ -52,6 +52,55 @@ paths funnel into the identical `llm/orchestrator.py::run_turn` and reach the
 same recommendation. `tests/test_app_service.py` proves this by never
 constructing an `LlmProvider` at all.
 
+## Conversational provider selection
+
+`app/runtime.py::build_llm_provider(settings)` is the one place a conversational
+`LlmProvider` is chosen, and it is the same choice for the CLI harness and any
+future channel:
+
+| `VYAPAR_LLM_ENABLED` | `VYAPAR_LLM_BASE_URL` | `VYAPAR_LLM_API_KEY` | provider |
+|---|---|---|---|
+| false | — | — | `None` (deterministic-only; fully supported) |
+| true | set | — | `HttpLlmProvider` (generic OpenAI-style HTTP shim) |
+| true | blank | set | `GeminiLlmProvider(role="conversation")` |
+| true | blank | — | `None` + a warning (enabled but nothing to call) |
+
+`GeminiLlmProvider` gained a third `role` alongside the Phase 5 offline
+`extractor`/`verifier` gate. `role="conversation"` reads the **separate**
+`Settings.llm_*` block (`VYAPAR_LLM_API_KEY` / `VYAPAR_LLM_MODEL` /
+`VYAPAR_LLM_TIMEOUT_S` / retry fields) — that credential never touches the
+knowledge-extraction gate and vice versa (`tests/test_gemini_conversation_
+provider.py::test_conversation_role_does_not_read_the_extractor_or_verifier_
+keys`). The extractor/verifier code paths are byte-identical to before: the
+role branch only adds a fourth arm. For this role only, the request pins
+`generationConfig.responseMimeType = "application/json"` so `llm/structured.py`
+parses on the first try instead of a repair round-trip.
+
+Whatever provider is selected, nothing downstream changes: `extract_understanding`
+still emits a schema-constrained `TurnUnderstanding`, `conversation/deltas.py`
+still requires every `value_token` to occur verbatim in its `raw_text`, and the
+reply is still the deterministic renderer. `tests/test_app_service_llm.py` runs
+the whole `AdvisoryService` path with a `ScriptedLlmProvider` and pins: engine
+numbers are preserved (exact `SCHEME_CAPACITY` arithmetic), a token absent from
+its `raw_text` is dropped with the slot left `MISSING`, an empty corpus resolves
+zero RAG parameters (no invented rate), and an `unclear` extraction degrades to
+exactly one planner question.
+
+### Live smoke test on record
+
+One live call was made against the configured `gemini-3.6-flash` conversational
+key (`scripts/`-style offline fakes for every other engine, so the only network
+call was the extraction). Result: 2 Gemini calls (`extraction` ~20 s, then one
+`repair` ~4 s — the first response was not a bare JSON object; the
+`responseMimeType` pin above was added afterwards to remove that round-trip on
+future turns, not yet re-verified live), all three slots
+(`proposed_business_text`, `location_text`, `liquid_cash_inr`) extracted with
+zero fabricated-token warnings, `llm_used=True`, `RECOMMEND` reached, narrative
+100 % template-authored, no interest rate stated, `FINANCE_KNOWLEDGE` resolved
+1/11 parameters from the shipped corpus (a real resolution, not an invention).
+The response stayed evidence-grounded. Broader live runs are held pending
+explicit sign-off.
+
 ## The step DAG and cascade invalidation
 
 `conversation/artifacts.py` fingerprints each step as a SHA-256 over its
@@ -172,12 +221,15 @@ assumptions and limitations":
   of a dedicated rung) — the DAG's degrade-gracefully design meant most of that
   branching was unreachable once financial drivers stopped gating step
   readiness.
-* **LLM narrative generation** (an `explanation` prompt producing per-section
-  prose, checked by `grounding.py`, swapped in over the template) is not yet
-  wired into `app/service.py::send_message` — `conversation/grounding.py` and
-  `llm/prompts.py::EXPLANATION_INSTRUCTIONS` exist and are tested standalone,
-  but every reply today is the deterministic renderer. `Narrative.
-  generated_by` will read `"llm"` for an accepted section once this is wired.
+* **LLM narrative generation** (`llm/reply_authoring.py`: an `explanation`
+  prompt producing per-section prose, checked by `grounding.py`, swapped in
+  over the template) IS now wired into `app/service.py::send_message`, but
+  stays **opt-in and OFF by default** (`Settings.llm_reply_authoring_enabled`,
+  `VYAPAR_LLM_REPLY_AUTHORING_ENABLED`) — never a prerequisite for safe
+  extraction or pipeline correctness. When enabled with a configured
+  provider, `Narrative.generated_by[section]` reads `"llm"` for any section
+  whose rewrite passed grounding; every other section (and every reply when
+  the flag is off) is the deterministic renderer, exactly as before.
 * **Numeric grounding** does not yet generate rendering variants
   (`650000` / `6,50,000` / `6.5 lakh`) — it matches comma-insensitively only.
 * **Injection defence** relies on structural separation (untrusted text never
@@ -190,6 +242,28 @@ assumptions and limitations":
 * An interactive `chat` REPL, `RecordingLlmProvider` + `--record`, and a
   `--why <fact_id>` provenance-dump affordance (all "SHOULD" items in the
   approved plan) are not implemented.
+
+## Production configuration
+
+Required before running `scripts/phase6_chat.py --llm` (or any deployment)
+against real, non-fixture services — none of these are hard-coded, and none
+are set in the committed `.env.example` beyond a placeholder:
+
+* **`VYAPAR_USER_AGENT`** — the public Nominatim instance's usage policy
+  rejects a generic/placeholder `User-Agent` with HTTP 403. Set this to a
+  real, descriptive value with a working contact (e.g. `VyaparSarathi/1.0
+  (contact: you@example.org)`) before geocoding against
+  `nominatim.openstreetmap.org`. `Settings.user_agent`'s shipped default is
+  deliberately honest about being unconfigured (see its own docstring) so a
+  403 here is expected, not a bug, until this is set.
+* **`VYAPAR_LLM_ENABLED=true`** plus either `VYAPAR_LLM_BASE_URL` (generic
+  HTTP shim) or `VYAPAR_LLM_API_KEY` (Gemini-native) — required for
+  `--llm`'s free-text extraction; `llm_enabled=false` remains a fully
+  supported, deterministic mode with zero API key.
+* **`VYAPAR_LLM_REPLY_AUTHORING_ENABLED`** — opt-in, defaults to `false`.
+  Only turn this on once the grounding contract (`conversation/grounding.py`)
+  has been validated against real model output for this deployment's
+  traffic; it is never required for correct, safe extraction.
 
 ## Running it
 

@@ -202,11 +202,17 @@ one) is never overwritten. With an empty corpus, binding changes nothing —
 `assess_financials(plan)` byte-for-byte
 (`tests/test_knowledge_to_finance.py`).
 
-The corpus ships **empty** — `data/knowledge/` holds zero real documents; the
-machinery is exercised end to end against a synthetic, visibly-fictional
-fixture corpus (`tests/fixtures/knowledge/`, see its README) and the shipped
-demo (`scripts/phase5_demo.py`). Ingesting real government documents is a
-separate, ongoing operator task (`data/knowledge/SOURCES.md`,
+`data/knowledge/` currently holds a **limited real corpus: 3 documents, 14
+chunks, and 2 approved parameter rows** — a PMMY/MUDRA `loan_ceiling_inr` and a
+PMEGP `promoter_margin_pct`. This corpus is **incomplete**: it carries **no
+verified interest rate, tenure, or moratorium** for any scheme, and does not
+provide enough verified finance evidence for all scheme / rate / tenure cases.
+A query for a parameter the corpus does not cover resolves `no_evidence` — the
+value is then surfaced as missing or as an explicit user assumption, never
+fabricated. The machinery is also exercised end to end against a synthetic,
+visibly-fictional fixture corpus (`tests/fixtures/knowledge/`, see its README)
+and the shipped demo (`scripts/phase5_demo.py`). Ingesting more real government
+documents is a separate, ongoing operator task (`data/knowledge/SOURCES.md`,
 `scripts/build_knowledge_corpus.py` + `scripts/build_parameter_registry.py`),
 not a code change. See [`docs/phase-5.md`](docs/phase-5.md), including its
 unsupported-parameter register; tunables (tier weights, freshness decay,
@@ -215,7 +221,10 @@ applicability penalties) live in `knowledge/knowledge_config.py`.
 ## Phase 6 — Application Backend + LLM Orchestration
 
 **Input:** a channel-neutral `MessageRequest` (`app/dto.py`) — structured slot
-updates today, free text tomorrow when an LLM provider is configured.
+updates always, plus free-text natural language when a conversational LLM
+provider is configured (`VYAPAR_LLM_ENABLED=true` with either a generic HTTP
+shim URL or a Gemini key — see `.env.example` and
+[`docs/phase-6.md`](docs/phase-6.md)).
 **Output:** an `AdvisoryReply` — plain-text lines, numbered choices, and a
 `Narrative` that records, per section, whether it was rendered deterministically
 or by an LLM.
@@ -225,7 +234,7 @@ session lifecycle and persistence (`database/session_repository.py`, in-memory o
 SQLite) and drives one turn of `llm/orchestrator.py::run_turn` per message. That
 function applies the turn's deltas, invalidates any step whose declared inputs
 changed (`conversation/artifacts.py`, SHA-256 over inputs, never outputs), and
-runs the 15-node step DAG (`conversation/workflow.py`) as far as it structurally
+runs the 18-node step DAG (`conversation/workflow.py`) as far as it structurally
 can — `llm/tools.py::STEP_RUNNERS` is the **only** place in the repository that
 calls a Phase 1-5 engine, using every real signature verbatim.
 
@@ -247,10 +256,91 @@ table over Phase 3's `Stance` and Phase 4's `FinancialFeasibilityStatus`
 is not a cycle), the grounding check's guarantees and stated limits, and what is
 deliberately deferred (LLM-authored narrative is implemented and tested standalone
 but not yet wired into `send_message`; every reply today is the deterministic
-renderer). Run the scripted, offline, two-transcript demo:
+renderer). Run the scripted, offline, three-transcript demo:
 `python scripts/phase6_demo.py`.
 
-Nothing beyond Phase 6 is implemented (no WhatsApp transport, no DPR rendering,
+## Phase 7 — WhatsApp channel (preparation only)
+
+**Input:** a provider-neutral webhook `dict` (`{"from", "type", "text" | "interactive", …}`).
+**Output:** one or more `OutboundWhatsAppMessage` text bubbles.
+
+`channels/whatsapp/` is a **translation boundary only** — no live provider, no
+Meta/Twilio SDK, no new settings. `WhatsAppGateway.handle_webhook` parses the
+neutral payload (`MalformedWebhookError` on a bad one), derives the session key
+from the sender id (`whatsapp:<sender>`, isolated per channel), calls
+`AdvisoryService.send_message`, and maps the `AdvisoryReply` back to bubbles.
+Numbered choices are rendered as plain text first (a trailing "Reply with a
+number from 1 to N."); an `interactive` reply or a bare `1`–`3`-digit text both
+map to `selected_choice`. Voice / media / location parse to a first-class
+`UNSUPPORTED` deferred notice — never a faked transcription, never a service
+call. `tests/test_channels_purity.py` AST-checks that no `channels/` module
+imports an engine, `conversation/`, `llm/`, a source, the database, or `httpx`.
+`FakeWhatsAppTransport` records outbound bubbles in place of a real send. See
+[`docs/phase-7.md`](docs/phase-7.md) for the neutral contract and the
+provider decision / credentials still needed.
+
+A diagnostic-only `llm/diagnostics.py` explains an unusable conversational
+Gemini response (finish reason, usage-metadata token counts, redacted
+excerpt); `scripts/phase6_gemini_diag.py` makes exactly one live call and is
+not run automatically. No token-limit or model change.
+
+## Phase 8 — Detailed Project Report (DPR) generation
+
+**Input:** a finished `AdvisoryService` session + an injected report timestamp.
+**Output:** a `DprDocument` (strongly-typed), rendered to a polished PDF **and**
+the same content as JSON beside it.
+
+`vyaparsarathi.dpr` *only composes* what Phases 1–7 produced — stored step
+artifacts, the recommendation, the SWOT, conversation slots (with provenance),
+retrieved knowledge evidence. It runs no engine, no LLM, and reads no clock
+(`generated_at` is passed in); `tests/test_dpr_purity.py` AST-enforces this.
+Every figure is a `ProvenancedValue` with exactly one origin —
+`user_provided` / `sourced` (with a citation) / `calculated` (with named
+inputs) / `assumed` (with a rationale) / `declared_config` (the SIH 10%/90%
+structure — configuration, never a retrieved scheme rule) / `not_available`
+(shown as *"Not available from current evidence"* / *"Additional input
+required"*, never hidden or defaulted).
+
+Sections (each with a `rendered` / `partial` / `evidence_gap` status): cover ·
+executive summary · entrepreneur & project profile · local market assessment ·
+opportunity & alternatives · project & operating plan · financial assessment
+(or a prominent *"Financial assessment incomplete"* naming the exact missing
+drivers) · scheme / compliance / knowledge evidence · risks & SWOT ·
+assumptions, limitations & confidence · annexures (sources & citations,
+calculation provenance, stated-input history, glossary).
+
+Determinism: `dpr.fingerprint.input_fingerprint(session)` hashes only the
+content inputs (artifact fingerprints + slot provenance + resolved category +
+warnings), never wall-clock fields — so the same session regenerates the same
+`report_id` (`DPR-<hex16>`) and the same structured body on any day, and
+`render_pdf_bytes` is byte-identical for identical input.
+
+PDF renderer: **`reportlab>=4,<5`** (pure-Python wheels, no system libraries;
+`platypus` gives auto-paginating tables with repeated header rows,
+header/footer page templates with "Page X of Y", and reflowable text). `pypdf`
+is a dev-only dependency used by the tests to read PDFs back. See
+[`docs/phase-8.md`](docs/phase-8.md) for the data flow, the full
+"insufficient evidence" conditions, and the renderer rationale.
+
+```bash
+# the SIH demo report (offline; fixtures + shipped knowledge corpus):
+python scripts/generate_dpr.py --demo --out-dir build/dpr
+python scripts/phase8_demo.py                     # same, with a printed summary
+
+# from a session AdvisoryService persisted:
+python scripts/generate_dpr.py --session-id <id> --pdf out/r.pdf --json out/r.json
+```
+
+`DprService.generate(...)` writes PDF + JSON side by side and refuses to
+overwrite an existing file unless `--overwrite`. The bundled demo produces
+report `DPR-9DF3C947297C75A3` — recommendation **Pivot → dairy** (a better
+local alternative than the proposed pulses grocery), financial status
+*Feasible with stretch*, one sourced scheme parameter plus honest "no
+evidence" for interest rate / tenure / moratorium, 19 disclosed evidence gaps.
+It is a **structured bank-handoff / decision-support report with visible
+limitations**, not a bank-approval-ready document.
+
+Nothing beyond this is implemented (no WhatsApp transport / webhook receiver,
 no Google Places, no SensiBook).
 
 ## Setup
@@ -433,7 +523,7 @@ src/vyaparsarathi/
                   confidence, tokenize/lexical/retrieval (all pure except
                   plan_binding.py, the only module importing models/finance's
                   plan models; see tests/test_knowledge_purity.py)
-  conversation/   Phase 6 — PURE: slots/provenance, the 15-node step DAG,
+  conversation/   Phase 6 — PURE: slots/provenance, the 18-node step DAG,
                   cascade invalidation, the recommendation combiner, the
                   evidence bundle, deterministic rendering, grounding (see
                   tests/test_conversation_purity.py)
@@ -442,18 +532,28 @@ src/vyaparsarathi/
                   parsing, turn orchestration (see tests/test_llm_leaf.py)
   app/            Phase 6 — channel-neutral backend: AdvisoryService, DTOs,
                   runtime wiring (no HTTP server; Phase 7 adds transport)
+  channels/       Phase 7 — provider-neutral WhatsApp boundary (gateway,
+                  inbound/outbound mapping, fake transport; no live provider;
+                  see tests/test_channels_purity.py)
+  dpr/            Phase 8 — DPR: report_models, provenance, pure assemble +
+                  sections, deterministic fingerprint, reportlab PDF renderer,
+                  JSON renderer, DprService (see tests/test_dpr_purity.py)
   utils/          haversine, HTTP retry/backoff, file cache, logging, time
 data/demand/      Census 2011 village extract (csv.gz) + SOURCES.md
-data/knowledge/   knowledge corpus (documents/chunks/parameters, ships empty)
-                  + SOURCES.md
+data/knowledge/   knowledge corpus (documents/chunks/parameters) — a limited
+                  real corpus: 3 documents, 14 chunks, 2 approved parameter
+                  rows, still incomplete; + SOURCES.md
 scripts/          discover_businesses.py (CLI, Phase 1 + 2A + 2B + 2C + 2D + 3);
                   build_census_dataset.py (one-off census ETL);
                   phase4_demo.py (six fixture-based financial scenarios);
                   build_knowledge_corpus.py / build_parameter_registry.py
                   (Phase 5 ETL: chunk, propose, verify);
                   phase5_demo.py (fixture-corpus evidence -> Phase 4 demo);
-                  phase6_demo.py (two offline transcripts through
-                  AdvisoryService: empty corpus, then the fixture corpus)
+                  phase6_demo.py (three offline transcripts through
+                  AdvisoryService: empty corpus, the fixture corpus, then a
+                  demo-only scheme override);
+                  generate_dpr.py / phase8_demo.py (Phase 8 DPR: PDF + JSON
+                  from a stored session or the bundled demo)
 tests/            unit tests + tests/fixtures/{osm,nominatim,census,knowledge}
 docs/             design notes
 ```

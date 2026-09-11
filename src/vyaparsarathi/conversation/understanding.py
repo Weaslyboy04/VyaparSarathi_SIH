@@ -57,6 +57,10 @@ class AssetUpdateInput(BaseModel):
 
     items: tuple[AssetKind, ...] = Field(min_length=1)
     raw_text: str = Field(min_length=1)
+    # Verbatim detail a coarse `AssetKind` can't carry ("2 cows", "100 sq
+    # ft") — never parsed into a quantity/area type, never used in any
+    # calculation (CLAUDE.md §13, §30); purely a human/DPR provenance note.
+    notes: tuple[str, ...] = ()
 
 
 class ExperienceUpdateInput(BaseModel):
@@ -78,7 +82,22 @@ class TurnUnderstanding(BaseModel):
     slot_updates: tuple[SlotUpdateInput, ...] = ()
     asset_update: AssetUpdateInput | None = None
     experience_update: ExperienceUpdateInput | None = None
+    # Removes specific kinds from the owned-assets/experience sets, leaving
+    # the rest untouched — a sibling to `asset_update`/`experience_update`
+    # (which only ever add), mirroring how `declined_slots` sits alongside
+    # `slot_updates` rather than overloading one field's meaning. Applied
+    # AFTER any addition in the same turn (CLAUDE.md §30: never silently
+    # merge a stated removal away).
+    assets_removed: tuple[AssetKind, ...] = ()
+    experience_removed: tuple[BusinessCategory, ...] = ()
     declined_slots: tuple[SlotName, ...] = ()
+    # `declined_slots` above is `SlotName`-typed and cannot name
+    # `session.assets` / `session.experience_categories` — neither is a
+    # scalar `Slot` (CLAUDE.md §13: assets are a set of kinds, never a
+    # single `Slot`). These two flags are the decline path for those two
+    # set-valued profile facts specifically ("assets: none" on the CLI).
+    assets_declined: bool = False
+    experience_declined: bool = False
     selected_choice: int | None = None  # 1-based, for SELECT_CANDIDATE
     # The LLM/channel MAY name a step to prioritise; `planner.py` only ever
     # narrows this against what is actually ready — never expands it

@@ -4,21 +4,31 @@
 This is **declared problem-statement configuration**, not a retrieved scheme
 rule (§18: "the scheme/credit routing engine consumes RAG output to obtain
 scheme parameters; it does not guess them") and not a fact this repository
-discovered on its own — it is the financing split, ceilings, and (optionally)
-loan terms the SIH26091 statement itself specifies for this hackathon
-problem. Every `FinancialInput` `finance/structuring.py` derives from it is
-tagged `InputKind.ASSUMED`, `source="config:sih_scheme"` (CLAUDE.md §15: "all
-rates, tenures, margins ... are inputs ... never hard-coded constants
-pretending to be facts") — never `SOURCED`, which is reserved for a real
-retrieved document (`knowledge/plan_binding.py`).
+discovered on its own — it is the financing split, ceilings, and loan terms
+the SIH26091 statement itself specifies for this hackathon problem. Every
+`FinancialInput` `finance/structuring.py` / `finance/capacity.py` derives
+from it is tagged `InputKind.ASSUMED`, `source="config:sih_scheme"`
+(CLAUDE.md §15: "all rates, tenures, margins ... are inputs ... never
+hard-coded constants pretending to be facts") — never `SOURCED`, which is
+reserved for a real retrieved document (`knowledge/plan_binding.py`).
 
-**Ships unconfigured** (`DEFAULT_SIH_SCHEME_CONFIG = None`), exactly like
-`data/knowledge/` ships an empty corpus (CLAUDE.md §30: "do not invent
-missing data — surface the gap"). `finance/structuring.py` degrades to an
-honest `NOT_CONFIGURED` status when no config is set — it never invents a
-split. Set `DEFAULT_SIH_SCHEME_CONFIG` to a real `SihSchemeConfig` instance
-here, built only from the SIH26091 problem-statement text, to activate
-structuring. [tunable]
+**Two declared bands, both `[tunable]`** — the SIH26091 problem statement's
+own worked structure, a fixed 10% promoter / 90% funding split throughout,
+selected by project-cost band (see `finance/scheme_router.py`):
+
+* **Micro Finance** — project cost up to Rs 1.40 lakh; max loan Rs 1.25 lakh;
+  6.5% p.a.; 3-year tenure; 3-month moratorium.
+* **Term Loan** — project cost above Rs 1.40 lakh up to Rs 50 lakh; max loan
+  Rs 45 lakh; 8% p.a.; 7-year tenure; 6-month moratorium.
+
+`DEFAULT_SIH_SCHEME_TABLE` declares both, so `finance/structuring.py` and
+`finance/capacity.py` are **configured out of the box** — unlike
+`data/knowledge/`, which genuinely ships an empty corpus (CLAUDE.md §30: "do
+not invent missing data — surface the gap"; there is a real, official
+SIH26091 rule to declare here, not an absence to admit). Passing an empty
+table (or `None`) still degrades honestly to `NOT_CONFIGURED` — that path is
+kept and tested, for a deployment that deliberately does not want Tier 1
+structuring active.
 """
 
 from __future__ import annotations
@@ -89,10 +99,52 @@ class SihSchemeConfig(BaseModel):
         return self
 
 
-# Unconfigured by default — see the module docstring. Replace with a real
-# `SihSchemeConfig(...)` built from the SIH26091 problem-statement text to
-# activate deterministic financial structuring.
-DEFAULT_SIH_SCHEME_CONFIG: SihSchemeConfig | None = None
+# The SIH26091 problem statement's own two declared bands — see the module
+# docstring. A 10%/90% split throughout; project-cost band decides which one
+# applies (`finance/scheme_router.py::route_scheme`).
+MICRO_FINANCE = SihSchemeConfig(
+    scheme_name="Micro Finance",
+    promoter_contribution_pct=Decimal("0.10"),
+    loan_pct=Decimal("0.90"),
+    max_project_cost_inr=Decimal("140000"),
+    max_loan_inr=Decimal("125000"),
+    interest_rate_pct=Decimal("6.5"),
+    tenure_months=36,
+    moratorium_months=3,
+    rationale=(
+        "SIH26091 problem statement's declared micro-finance structure: project cost up "
+        "to Rs 1.40 lakh, 90% funding up to Rs 1.25 lakh, 6.5% p.a., 3-year tenure, "
+        "3-month moratorium."
+    ),
+)
+
+TERM_LOAN = SihSchemeConfig(
+    scheme_name="Term Loan",
+    promoter_contribution_pct=Decimal("0.10"),
+    loan_pct=Decimal("0.90"),
+    min_project_cost_inr=Decimal("140000"),
+    max_project_cost_inr=Decimal("5000000"),
+    max_loan_inr=Decimal("4500000"),
+    interest_rate_pct=Decimal("8"),
+    tenure_months=84,
+    moratorium_months=6,
+    rationale=(
+        "SIH26091 problem statement's declared term-loan structure: project cost above "
+        "Rs 1.40 lakh up to Rs 50 lakh, 90% funding up to Rs 45 lakh, 8% p.a., 7-year "
+        "tenure, 6-month moratorium."
+    ),
+)
+
+# The shipped default: both bands declared, so Tier 1 structuring is
+# configured out of the box (see the module docstring). An empty tuple (or
+# `None`, still accepted at every call site for backward compatibility)
+# degrades honestly to `NOT_CONFIGURED` — never a fabricated split.
+DEFAULT_SIH_SCHEME_TABLE: tuple[SihSchemeConfig, ...] = (MICRO_FINANCE, TERM_LOAN)
 
 
-__all__ = ["DEFAULT_SIH_SCHEME_CONFIG", "SihSchemeConfig"]
+__all__ = [
+    "DEFAULT_SIH_SCHEME_TABLE",
+    "MICRO_FINANCE",
+    "SihSchemeConfig",
+    "TERM_LOAN",
+]

@@ -122,14 +122,26 @@ def _category_ok(param: SourcedParameter, query: ParameterQuery) -> bool:
 
 
 def _loan_band_ok(param: SourcedParameter, query: ParameterQuery) -> bool:
+    """Respects each bound's own inclusive/exclusive semantics (CLAUDE.md
+    §18 — a band's wording is a fact from the document, not a convention we
+    impose). "Above Rs. 50,000" (exclusive) excludes exactly Rs. 50,000;
+    "up to Rs. 5,00,000" (inclusive) includes exactly Rs. 5,00,000."""
     amount = query.loan_amount_inr
     if amount is None:
         return True
     a = param.applicability
-    if a.min_loan_inr is not None and amount < a.min_loan_inr:
-        return False
-    if a.max_loan_inr is not None and amount > a.max_loan_inr:
-        return False
+    if a.min_loan_inr is not None:
+        if a.min_loan_inr_exclusive:
+            if amount <= a.min_loan_inr:
+                return False
+        elif amount < a.min_loan_inr:
+            return False
+    if a.max_loan_inr is not None:
+        if a.max_loan_inr_exclusive:
+            if amount >= a.max_loan_inr:
+                return False
+        elif amount > a.max_loan_inr:
+            return False
     return True
 
 

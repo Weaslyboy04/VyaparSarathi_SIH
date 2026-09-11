@@ -22,12 +22,28 @@ invented rates or margins, this time laundered through "the document said
 so" instead of "the demo assumed so." The countermeasure is structural, in
 three parts:
 
-1. **Extraction happens offline, once, with a human signature** — never at
-   request time, never by an LLM deciding a value (CLAUDE.md §3.1).
+1. **Extraction happens offline, once, through a genuinely blind dual-LLM
+   gate** — never at request time, and no single model's say-so is trusted:
+   two DIFFERENT Gemini models each independently read the exact same
+   chunk/document/instructions and each propose at most one candidate row —
+   neither is ever shown the other's answer. The two independent candidates
+   are compared only after both are in hand, deterministically (never
+   fuzzy-matched); they publish only on exact canonical agreement, or the
+   row is dropped — never queued, never averaged, never arbitrarily picked
+   (`scripts/build_parameter_registry.py`'s module docstring has the full
+   gate). This replaced an earlier human-signature requirement; see that
+   script's docstring for exactly what each model is and isn't trusted to
+   decide.
 2. **A registry row is checkable, not merely asserted**: its `value_token`
    must occur in its own `evidence_quote`, its `value` must match what
    `normalize_value` derives from that token, and (at load time) its
-   `evidence_quote` must occur verbatim in the chunk it cites.
+   `evidence_quote` must occur verbatim in the chunk it cites. A row's
+   `tier` is always copied from its own document's `DocumentRecord.tier`
+   (never proposed by either model), and its `applicability.jurisdiction`
+   is rejected if it claims broader or mismatched scope than its own
+   document ever asserted — both checked again at load time
+   (`sources/knowledge/loader.py::jurisdiction_exceeds_document_scope`) as
+   defense-in-depth against a hand-edited `documents.jsonl`.
 3. **The resolver never consults a retriever.** A parameter's value is
    chosen by a fixed precedence ladder over the registry alone; retrieval
    only supplies passages for citation/display. A bad ranking can degrade
@@ -43,11 +59,12 @@ scheme's stated parameters and nothing more.
 ## Data flow
 
 ```
-        ┌─ operator, offline, human-signed ─────────────────────────┐
+        ┌─ operator, offline, dual-LLM gated ────────────────────────┐
         │ data/knowledge/raw/<document_id>/{document.json,text.txt} │
         │   -> scripts/build_knowledge_corpus.py    (chunk)         │
-        │   -> scripts/build_parameter_registry.py  (propose)       │
-        │   -> A HUMAN reviews, corrects units, signs                │
+        │   -> scripts/build_parameter_registry.py  (extract:       │
+        │      extractor + verifier Gemini models must agree, or    │
+        │      the row is dropped — never queued for a human)       │
         │   -> scripts/build_parameter_registry.py --verify         │
         └────────────────────────┬───────────────────────────────────┘
                                  │ commits
@@ -100,7 +117,8 @@ plan models — the mirror of `finance/fit.py` being the only module in
 | `sources/knowledge/loader.py` | `FileCorpusStore` — reads the committed corpus, never raises |
 | `discovery/knowledge_acquisition.py` | `acquire_finance_knowledge()` — the impure acquisition layer |
 | `scripts/build_knowledge_corpus.py` | ETL stage 1: operator text -> section-aware chunks |
-| `scripts/build_parameter_registry.py` | ETL stage 2: `propose` candidates, `verify` a signed registry |
+| `scripts/build_parameter_registry.py` | ETL stage 2: `extract` (dual-LLM gate, publish or drop), `verify` a committed registry |
+| `scripts/knowledge_extraction_prompts.py` | Prompt text for the extractor/verifier gate |
 
 ## The three "never fabricate a number" checks
 
@@ -237,9 +255,12 @@ pins this.
   entrepreneur, business, or state (CLAUDE.md §4's separate credit-routing
   component, not built here).
 - **No LLM ever selects, extracts, or approves a value on the request
-  path.** An LLM may assist a human at `propose` time, offline; every row
-  still needs a human signature and must pass all three "never fabricate"
-  checks before it can be committed.
+  path.** Two LLMs (an extractor and an independent verifier) do the
+  extraction itself, but only offline, in `extract`, and only when they
+  agree — a single model's proposal is never sufficient on its own, and
+  every published row still passes all three mechanical "never fabricate"
+  checks plus the tier/jurisdiction-scope checks before it can be
+  committed.
 
 ## Edge cases
 
@@ -289,10 +310,18 @@ pins this.
 - **`SUBSIDY_PCT` is percentage-only.** A scheme stating a flat-rupee
   subsidy has no home in the current `ParameterName` set; adding one is a
   model change, not attempted here.
-- **`propose` is a coarse regex aid, not an extractor of record.** Every
-  candidate it writes is unsigned and must be read against its
-  `evidence_quote` by a human before it can become part of the committed
-  registry.
+- **`extract` scans every chunk in the corpus, with no keyword pre-filter.**
+  Deliberate: a regex/keyword gate risks silently skipping a parameter
+  phrased outside a fixed word list. Trade-off: 2 LLM calls per chunk on
+  every run, spending free-tier quota proportional to corpus size — fine at
+  the current handful-of-documents scale, worth revisiting if the corpus
+  grows substantially.
+- **`extractor_model`/`verifier_model` from the same vendor reduce, not
+  eliminate, the value of independent verification.** Two Gemini models of
+  different generations still share more training/architecture than a
+  cross-vendor pair would; a systematic blind spot both models share (e.g.
+  a language/formatting convention neither reads correctly) would not be
+  caught by their agreement matching.
 - **Phase 3's `_CAPITAL_BANDS` is untouched.** `market/opportunity_config.py`
   still marks it `[assumption], pending Phase 5 scheme retrieval` — wiring
   real capital bands through this registry is deferred to avoid reopening
@@ -354,11 +383,13 @@ python scripts/build_knowledge_corpus.py \
     --raw-dir data/knowledge/raw --built-at 2026-01-15T00:00:00+00:00 \
     --out-dir data/knowledge
 
-python scripts/build_parameter_registry.py propose \
-    --corpus-dir data/knowledge --out data/knowledge/parameters_proposed.csv
-# -> a human reviews parameters_proposed.csv against evidence_quote,
-#    corrects units/applicability, signs reviewed_by/reviewed_on, and
-#    merges surviving rows into data/knowledge/parameters.csv
+python scripts/build_parameter_registry.py extract \
+    --corpus-dir data/knowledge --out data/knowledge/parameters.csv \
+    --verified-on 2026-01-15
+# -> the dual-LLM gate runs and writes data/knowledge/parameters.csv
+#    directly (full overwrite) — every published row already agreed between
+#    the extractor and verifier models and passed every mechanical/scope
+#    check; nothing further to sign or merge.
 
 python scripts/build_parameter_registry.py verify --corpus-dir data/knowledge
 ```

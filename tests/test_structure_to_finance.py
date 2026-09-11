@@ -110,13 +110,33 @@ def _scheme_cfg() -> SihSchemeConfig:
     )
 
 
-def test_default_deployment_is_not_configured_and_still_completes(
+def test_default_deployment_is_configured_and_structures_a_real_loan() -> None:
+    """The shipped default (`DEFAULT_SIH_SCHEME_TABLE`, both SIH bands
+    declared) must never crash the turn — STRUCTURE_FINANCE band-routes the
+    fixture plan's project cost (Rs 323,000) into the Term Loan band and
+    structures a real split; ASSESS_FINANCE then runs on the structured
+    plan."""
+    session = _session_with_bound_plan()
+    ctx = _ctx()
+
+    session = run_step(StepId.STRUCTURE_FINANCE, session, ctx, turn_index=1)
+    structure_artifact = session.artifacts[StepId.STRUCTURE_FINANCE]
+    structure = SchemeStructureResult.model_validate(structure_artifact.payload)
+    assert structure.status is SchemeStructureStatus.STRUCTURED
+    assert structure.scheme_name == "Term Loan"
+
+    session = run_step(StepId.ASSESS_FINANCE, session, ctx, turn_index=1)
+    assert StepId.ASSESS_FINANCE in session.artifacts  # completed, did not raise
+
+
+def test_an_explicitly_empty_scheme_table_still_degrades_to_not_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The shipped default (`DEFAULT_SIH_SCHEME_CONFIG = None`) must never
-    crash the turn — STRUCTURE_FINANCE reports NOT_CONFIGURED, and
-    ASSESS_FINANCE still runs (on the unstructured plan) rather than
-    stalling."""
+    """A deployment that deliberately does not want Tier 1 structuring active
+    (an empty table, not the shipped default) must still degrade honestly —
+    STRUCTURE_FINANCE reports NOT_CONFIGURED, and ASSESS_FINANCE still runs
+    (on the unstructured plan) rather than stalling."""
+    monkeypatch.setattr(tools_module, "DEFAULT_SIH_SCHEME_TABLE", ())
     session = _session_with_bound_plan()
     ctx = _ctx()
 
@@ -132,7 +152,7 @@ def test_default_deployment_is_not_configured_and_still_completes(
 def test_configured_scheme_structures_a_loan_that_reaches_dscr_and_emi(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tools_module, "DEFAULT_SIH_SCHEME_CONFIG", _scheme_cfg())
+    monkeypatch.setattr(tools_module, "DEFAULT_SIH_SCHEME_TABLE", (_scheme_cfg(),))
     session = _session_with_bound_plan()
     ctx = _ctx()
 
@@ -153,7 +173,7 @@ def test_configured_scheme_structures_a_loan_that_reaches_dscr_and_emi(
 def test_a_user_stated_loan_is_never_overwritten_by_the_scheme(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tools_module, "DEFAULT_SIH_SCHEME_CONFIG", _scheme_cfg())
+    monkeypatch.setattr(tools_module, "DEFAULT_SIH_SCHEME_TABLE", (_scheme_cfg(),))
     now = datetime.now(UTC)
     session = ConversationSession(session_id="s1", created_at=now, updated_at=now, turn_index=1)
     from vyaparsarathi.models.finance import LoanTerms, MoratoriumTreatment

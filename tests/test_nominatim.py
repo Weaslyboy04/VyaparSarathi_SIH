@@ -114,6 +114,17 @@ def test_http_404_raises_geocoding_error(settings: Settings) -> None:
 
 
 @respx.mock
+def test_http_403_raises_geocoding_error_with_actionable_message(settings: Settings) -> None:
+    respx.get(SEARCH).mock(return_value=httpx.Response(403))
+    with _geocoder(settings) as geo:
+        with pytest.raises(GeocodingError) as exc_info:
+            geo.geocode("Bhagwanpur")
+    message = str(exc_info.value)
+    assert "403" in message
+    assert "VYAPAR_USER_AGENT" in message
+
+
+@respx.mock
 def test_timeout_raises_geocoding_error(settings: Settings) -> None:
     respx.get(SEARCH).mock(side_effect=httpx.ConnectTimeout("slow"))
     with _geocoder(settings) as geo, pytest.raises(GeocodingError):

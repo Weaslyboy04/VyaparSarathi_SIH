@@ -71,7 +71,7 @@ def run_turn(
 
     executed: list[StepId] = []
     step_warnings: list[str] = []
-    action = decide(session, understanding, cfg=ctx.conv_cfg)
+    action = decide(session, understanding, cfg=ctx.conv_cfg, mode=ctx.mode)
     # requested_step only ever governs the FIRST decision of a turn (rung 5's
     # narrowing property) — subsequent iterations run whatever the DAG makes
     # ready next, using a request-free understanding.
@@ -87,11 +87,11 @@ def run_turn(
             step_warnings.append(f"{step.value} could not complete: {exc}")
             break
         executed.append(step)
-        action = decide(session, quiet_understanding, cfg=ctx.conv_cfg)
+        action = decide(session, quiet_understanding, cfg=ctx.conv_cfg, mode=ctx.mode)
 
     all_warnings = (*apply_warnings, *step_warnings)
     session = session.model_copy(
-        update={"session_warnings": (*session.session_warnings, *step_warnings)}
+        update={"session_warnings": (*session.session_warnings, *all_warnings)}
     )
 
     record = TurnRecord(

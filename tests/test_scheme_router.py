@@ -67,3 +67,76 @@ def test_ambiguous_construction_needs_all_of_rationale_and_split() -> None:
 
     with pytest.raises((ValidationError, ValueError)):
         _cfg(rationale="")
+
+
+# --- band routing by project cost (Tier 1: two declared SIH bands) ---------
+
+
+def _micro() -> SihSchemeConfig:
+    return _cfg(
+        scheme_name="Micro Finance",
+        max_project_cost_inr=Decimal("140000"),
+        max_loan_inr=Decimal("125000"),
+    )
+
+
+def _term() -> SihSchemeConfig:
+    return _cfg(
+        scheme_name="Term Loan",
+        min_project_cost_inr=Decimal("140000"),
+        max_project_cost_inr=Decimal("5000000"),
+        max_loan_inr=Decimal("4500000"),
+    )
+
+
+def test_no_project_cost_selects_the_first_declared_scheme() -> None:
+    """The presence-only gate (`structure_financing`'s first call, before a
+    cost is derivable): picks the first declared scheme, never NOT_CONFIGURED
+    when something IS declared."""
+    result = route_scheme(C.GROCERY, (_micro(), _term()))
+    assert result.status is SchemeRoutingStatus.SELECTED
+    assert result.selected is not None
+    assert result.selected.scheme_name == "Micro Finance"
+
+
+def test_project_cost_within_the_micro_band_selects_micro() -> None:
+    result = route_scheme(C.GROCERY, (_micro(), _term()), project_cost_inr=Decimal("100000"))
+    assert result.selected is not None
+    assert result.selected.scheme_name == "Micro Finance"
+
+
+def test_project_cost_within_the_term_band_selects_term() -> None:
+    result = route_scheme(C.GROCERY, (_micro(), _term()), project_cost_inr=Decimal("1000000"))
+    assert result.selected is not None
+    assert result.selected.scheme_name == "Term Loan"
+
+
+def test_project_cost_at_the_exact_boundary_selects_the_band_that_declares_it() -> None:
+    """Rs 1,40,000 is Micro's inclusive ceiling AND Term's inclusive floor —
+    both cover it; the first declared (table order) wins deterministically."""
+    result = route_scheme(C.GROCERY, (_micro(), _term()), project_cost_inr=Decimal("140000"))
+    assert result.selected is not None
+    assert result.selected.scheme_name == "Micro Finance"
+
+
+def test_project_cost_above_every_band_falls_to_the_closest_one() -> None:
+    """Rs 60,00,000 exceeds Term's Rs 50L ceiling — no declared band covers
+    it, so the nearest one (Term, the only one with an upper bound near this
+    figure) is selected, letting the caller's own ceiling finding fire
+    against a real, named scheme rather than silently picking nothing."""
+    result = route_scheme(C.GROCERY, (_micro(), _term()), project_cost_inr=Decimal("6000000"))
+    assert result.selected is not None
+    assert result.selected.scheme_name == "Term Loan"
+
+
+def test_project_cost_routing_is_category_independent() -> None:
+    a = route_scheme(C.GROCERY, (_micro(), _term()), project_cost_inr=Decimal("1000000"))
+    b = route_scheme(C.DAIRY, (_micro(), _term()), project_cost_inr=Decimal("1000000"))
+    assert a.selected == b.selected
+
+
+def test_a_single_config_is_accepted_the_same_as_a_one_tuple() -> None:
+    cfg = _cfg()
+    a = route_scheme(C.GROCERY, cfg, project_cost_inr=Decimal("50000"))
+    b = route_scheme(C.GROCERY, (cfg,), project_cost_inr=Decimal("50000"))
+    assert a.selected == b.selected

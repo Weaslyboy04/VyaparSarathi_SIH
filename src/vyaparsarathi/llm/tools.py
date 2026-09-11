@@ -23,11 +23,12 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from vyaparsarathi.config import Settings
-from vyaparsarathi.config.sih_scheme import DEFAULT_SIH_SCHEME_CONFIG
+from vyaparsarathi.config.sih_scheme import DEFAULT_SIH_SCHEME_TABLE
 from vyaparsarathi.conversation.artifacts import compute_fingerprints, record_artifact
 from vyaparsarathi.conversation.conversation_config import (
     DEFAULT_CONVERSATION_CONFIG,
     ConversationConfig,
+    ConversationMode,
 )
 from vyaparsarathi.conversation.deltas import (
     set_resolved_category,
@@ -56,6 +57,7 @@ from vyaparsarathi.discovery.opportunity_acquisition import acquire_opportunity_
 from vyaparsarathi.discovery.service import DiscoveryService
 from vyaparsarathi.finance.assessment import assess_financials
 from vyaparsarathi.finance.assessment_models import FinancialAssessmentResult
+from vyaparsarathi.finance.capacity import compute_scheme_capacity
 from vyaparsarathi.finance.finance_config import DEFAULT_FINANCE_CONFIG
 from vyaparsarathi.finance.fit import to_financial_fit
 from vyaparsarathi.finance.structuring import apply_structure, structure_financing
@@ -107,6 +109,10 @@ class RunContext:
     retriever: Retriever | None = None
     clock: Clock = field(default=utcnow)
     conv_cfg: ConversationConfig = field(default=DEFAULT_CONVERSATION_CONFIG)
+    # DEVELOPER (default) keeps every pre-Phase-B test/demo's incremental
+    # behaviour unchanged; a real channel sets NORMAL. Threaded to
+    # `conversation/planner.py::decide` by `llm/orchestrator.py::run_turn`.
+    mode: ConversationMode = ConversationMode.DEVELOPER
 
 
 def _candidate_categories() -> list[BusinessCategory]:
@@ -174,8 +180,16 @@ def _run_discover(
         also_fetch=also_fetch,
     )
     if result.status is DiscoveryStatus.LOCATION_AMBIGUOUS:
+        # Nominatim's `display_name` for an Indian place commonly already
+        # ends with the state (e.g. "Bhagwanpur, Vaishali, Bihar, India") —
+        # append it again only when it's genuinely missing, otherwise the
+        # label reads "... Bihar, India (Bihar)" and, if a user re-types or
+        # pastes that label back as their next location, it no longer
+        # matches anything Nominatim recognises.
         options = tuple(
-            f"{c.display_name}" + (f" ({c.state})" if c.state else "") for c in result.candidates
+            f"{c.display_name}"
+            + (f" ({c.state})" if c.state and c.state.lower() not in c.display_name.lower() else "")
+            for c in result.candidates
         )
         session = set_slot_ambiguous(
             session,
@@ -331,12 +345,23 @@ def _run_bind_plan(
     return session, new_plan
 
 
+def _run_scheme_capacity(
+    session: ConversationSession, ctx: RunContext
+) -> tuple[ConversationSession, BaseModel]:
+    category = session.resolved_category or BusinessCategory.UNKNOWN
+    cash_slot = session.slot(SlotName.LIQUID_CASH_INR)
+    margin_capital: Decimal | int | None = None
+    if cash_slot.state is SlotState.USER_PROVIDED and isinstance(cash_slot.value, int | Decimal):
+        margin_capital = cash_slot.value
+    return session, compute_scheme_capacity(category, margin_capital, DEFAULT_SIH_SCHEME_TABLE)
+
+
 def _run_structure_finance(
     session: ConversationSession, ctx: RunContext
 ) -> tuple[ConversationSession, BaseModel]:
     plan = _load(session, StepId.BIND_PLAN, FinancialPlanInput)
     return session, structure_financing(
-        plan, scheme_cfg=DEFAULT_SIH_SCHEME_CONFIG, fin_cfg=DEFAULT_FINANCE_CONFIG
+        plan, scheme_cfg=DEFAULT_SIH_SCHEME_TABLE, fin_cfg=DEFAULT_FINANCE_CONFIG
     )
 
 
@@ -392,6 +417,7 @@ STEP_RUNNERS: dict[StepId, StepRunner] = {
     StepId.FINANCE_KNOWLEDGE: _run_finance_knowledge,
     StepId.BUILD_PLAN: _run_build_plan,
     StepId.BIND_PLAN: _run_bind_plan,
+    StepId.SCHEME_CAPACITY: _run_scheme_capacity,
     StepId.STRUCTURE_FINANCE: _run_structure_finance,
     StepId.ASSESS_FINANCE: _run_assess_finance,
     StepId.FINANCIAL_FIT: _run_financial_fit,
@@ -414,12 +440,11 @@ CONFIG_BLOBS: dict[StepId, dict] = {
     # distinct configs. Either one changing — a scheme figure or a finance
     # structural default — must bust the fingerprint.
     StepId.STRUCTURE_FINANCE: {
-        "scheme": (
-            DEFAULT_SIH_SCHEME_CONFIG.model_dump(mode="json")
-            if DEFAULT_SIH_SCHEME_CONFIG is not None
-            else None
-        ),
+        "scheme": [cfg.model_dump(mode="json") for cfg in DEFAULT_SIH_SCHEME_TABLE],
         "finance": DEFAULT_FINANCE_CONFIG.model_dump(mode="json"),
+    },
+    StepId.SCHEME_CAPACITY: {
+        "scheme": [cfg.model_dump(mode="json") for cfg in DEFAULT_SIH_SCHEME_TABLE],
     },
     StepId.OPPORTUNITY: DEFAULT_OPPORTUNITY_CONFIG.model_dump(mode="json"),
     StepId.BIND_PLAN: DEFAULT_KNOWLEDGE_CONFIG.model_dump(mode="json"),

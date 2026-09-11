@@ -13,9 +13,11 @@ machinery — resolution, confidence, binding into `FinancialPlanInput` — is
 built and tested (`tests/test_knowledge_*.py`) against a synthetic fixture
 corpus under `tests/fixtures/knowledge/` (all invented, see its own README),
 never against fabricated real-world content. Populating this directory with
-real documents is a separate, human, ongoing operator task — not part of any
-code change. `docs/phase-5.md`'s unsupported-parameter register tracks
-exactly which `ParameterName`s this corpus currently has no evidence for.
+real documents is a separate, ongoing operator task (staging real
+`data/knowledge/raw/` documents) — not part of any code change; the
+`extract` step itself runs unattended once real documents are staged.
+`docs/phase-5.md`'s unsupported-parameter register tracks exactly which
+`ParameterName`s this corpus currently has no evidence for.
 
 Raw operator downloads live under `data/knowledge/raw/` (git-ignored,
 per-document `document.json` + `text.txt` pairs — see
@@ -38,6 +40,9 @@ convention). Only the built, chunked, reviewed output is committed here.
 #    each downloaded document (see scripts/build_knowledge_corpus.py's
 #    docstring for the exact JSON fields and text-marker convention:
 #    # headings, [[page:N]], [[topics:...]], [[schemes:...]], [[categories:...]]).
+#    document.json's own `tier` and `jurisdiction` are the one part of this
+#    pipeline that stays an operator decision — who published this document
+#    and what it applies to isn't re-derivable from the text alone.
 
 # 2. Chunk them (deterministic; --built-at is a stated value, never a clock read):
 python scripts/build_knowledge_corpus.py \
@@ -45,19 +50,22 @@ python scripts/build_knowledge_corpus.py \
     --built-at 2026-01-15T00:00:00+00:00 \
     --out-dir data/knowledge
 
-# 3. Propose candidate parameter rows (mechanical pattern-matching, NOT
-#    review — every row comes back unsigned, reviewed_by/reviewed_on blank):
-python scripts/build_parameter_registry.py propose \
-    --corpus-dir data/knowledge --out data/knowledge/parameters_proposed.csv
+# 3. Genuinely blind dual-LLM extract: two DIFFERENT Gemini models each
+#    independently read the exact same chunk/document/instructions and
+#    each propose at most one candidate row — neither ever sees the
+#    other's answer. Published only on exact, deterministic agreement
+#    between the two independent candidates (never fuzzy-matched). A row's
+#    `tier` is copied from its own document, never proposed. Requires
+#    VYAPAR_GEMINI_EXTRACTOR_API_KEY / VYAPAR_GEMINI_VERIFIER_API_KEY set
+#    (see .env.example). Writes data/knowledge/parameters.csv directly —
+#    full overwrite on any nonzero-row run, no manual merge step (a
+#    zero-row run never overwrites an --out that already holds published
+#    rows — see write_parameters_csv):
+python scripts/build_parameter_registry.py extract \
+    --corpus-dir data/knowledge --out data/knowledge/parameters.csv \
+    --verified-on 2026-01-15
 
-# 4. A HUMAN reviews parameters_proposed.csv against each row's
-#    evidence_quote: fills in value, tier, applicability (jurisdiction,
-#    scheme, category, loan band), and signs reviewed_by + reviewed_on.
-#    Delete false positives. Only a fully-filled, signed row survives
-#    SourcedParameter construction. Merge the surviving rows into
-#    data/knowledge/parameters.csv.
-
-# 5. Verify the committed corpus is internally consistent before committing:
+# 4. Verify the committed corpus is internally consistent before committing:
 python scripts/build_parameter_registry.py verify --corpus-dir data/knowledge
 
 # then update this file's "Coverage" section below with what was actually

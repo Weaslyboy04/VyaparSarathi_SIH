@@ -24,6 +24,15 @@ from vyaparsarathi.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+_PUBLIC_NOMINATIM_URL = "https://nominatim.openstreetmap.org"
+# Must match Settings.user_agent's shipped default exactly — used only to
+# detect "still unconfigured" for the startup warning below, never compared
+# for any behavioural branching.
+_DEFAULT_USER_AGENT = (
+    "VyaparSarathi/0.1 (SIH26091 hackathon prototype; "
+    "no production contact configured -- set VYAPAR_USER_AGENT)"
+)
+
 # Nominatim `address` keys -> our admin fields, first present wins.
 _DISTRICT_KEYS = ("state_district", "district", "county")
 _BLOCK_KEYS = ("county", "subdistrict", "municipality", "city_district", "region")
@@ -61,6 +70,17 @@ class NominatimGeocoder:
         self._monotonic = monotonic
         self._lock = threading.Lock()
         self._last_call_at: float | None = None
+
+        if (
+            self._settings.user_agent == _DEFAULT_USER_AGENT
+            and self._settings.nominatim_url.rstrip("/") == _PUBLIC_NOMINATIM_URL
+        ):
+            logger.warning(
+                "VYAPAR_USER_AGENT is unset (using the shipped placeholder default) while "
+                "VYAPAR_NOMINATIM_URL points at the public Nominatim instance; its usage "
+                "policy commonly rejects generic User-Agent identification with HTTP 403. "
+                "Set VYAPAR_USER_AGENT in .env to a descriptive value with a real contact."
+            )
 
     def close(self) -> None:
         if self._owns_client:
@@ -110,6 +130,13 @@ class NominatimGeocoder:
         except HttpError as exc:
             raise GeocodingError(f"Nominatim request failed for {query!r}: {exc}") from exc
 
+        if response.status_code == 403:
+            raise GeocodingError(
+                f"Nominatim returned HTTP 403 for {query!r} -- likely rejected by the public "
+                "instance's usage policy (a generic/placeholder User-Agent, or the rate limit "
+                "was exceeded). Set VYAPAR_USER_AGENT to a descriptive value with a real "
+                "contact, or point VYAPAR_NOMINATIM_URL at a self-hosted/alternate instance."
+            )
         if response.status_code >= 400:
             raise GeocodingError(f"Nominatim returned HTTP {response.status_code} for {query!r}")
         try:

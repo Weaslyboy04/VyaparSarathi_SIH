@@ -30,6 +30,7 @@ from vyaparsarathi.finance.assessment_models import (
     FinancialFeasibilityStatus,
 )
 from vyaparsarathi.finance.structuring_models import SchemeStructureResult, SchemeStructureStatus
+from vyaparsarathi.models.results import DiscoveryResult, DiscoveryStatus
 from vyaparsarathi.models.taxonomy import BusinessCategory as C
 
 
@@ -132,6 +133,55 @@ def test_every_numeral_in_the_new_sections_is_grounded_in_its_own_bundle() -> No
     swot_keys = [f.key for f in bundle.facts if f.key.startswith("swot.")]
     result = check_section(narrative.sections["swot"], bundle, swot_keys)
     assert result.accepted, result.reason
+
+
+def test_no_discovery_results_surfaces_the_coverage_caution_not_a_failure() -> None:
+    """CLAUDE.md §11: absence from the data must never be reported as
+    evidence of zero competition. When Overpass/OSM returns nothing usable,
+    the delivered advisory says so plainly, without framing it as a system
+    failure."""
+    now = datetime.now(UTC)
+    session = ConversationSession(session_id="s1", created_at=now, updated_at=now, turn_index=1)
+    discovery = DiscoveryResult(
+        status=DiscoveryStatus.NO_RESULTS,
+        query_text="Bhagwanpur, Bihar",
+        category=C.GROCERY,
+        requested_radius_m=5000,
+    )
+    session = record_artifact(
+        session,
+        StepId.DISCOVER,
+        payload=discovery.model_dump(mode="json"),
+        payload_type="x",
+        fingerprint="fp0",
+        turn_index=1,
+    )
+    lines, narrative = render_reply(session, NextAction(kind=NextActionKind.DELIVER_PARTIAL))
+    assert "market_coverage_gap" in narrative.sections
+    text = narrative.sections["market_coverage_gap"]
+    assert "could not observe enough nearby-business data" in text
+    assert "does not mean there are no competitors" in text
+
+
+def test_discovery_ok_status_never_shows_the_coverage_caution() -> None:
+    now = datetime.now(UTC)
+    session = ConversationSession(session_id="s1", created_at=now, updated_at=now, turn_index=1)
+    discovery = DiscoveryResult(
+        status=DiscoveryStatus.OK,
+        query_text="Bhagwanpur, Bihar",
+        category=C.GROCERY,
+        requested_radius_m=5000,
+    )
+    session = record_artifact(
+        session,
+        StepId.DISCOVER,
+        payload=discovery.model_dump(mode="json"),
+        payload_type="x",
+        fingerprint="fp0",
+        turn_index=1,
+    )
+    lines, narrative = render_reply(session, NextAction(kind=NextActionKind.DELIVER_PARTIAL))
+    assert "market_coverage_gap" not in narrative.sections
 
 
 def test_no_structure_or_swot_artifact_omits_both_sections() -> None:

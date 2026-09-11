@@ -5,7 +5,24 @@ useful, never a magic number in `conversation/*.py`.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict
+
+
+class ConversationMode(StrEnum):
+    """Which UX the planner's ladder runs (CLAUDE.md §2's "COLLECT → VALIDATE
+    → COLLECT → ANALYSE → one advisory" vs. the Phase 6 structured-command
+    debug harness). Deliberately NOT a field on `ConversationConfig` — that
+    model is dumped into `CONFIG_BLOBS` and fingerprinted
+    (`conversation/artifacts.py`), so a field here would invalidate every
+    cached artifact the instant a session's mode changed; this is a plain,
+    unfingerprinted enum instead, threaded through `RunContext.mode`
+    (`llm/tools.py`) to `conversation/planner.py::decide`.
+    """
+
+    NORMAL = "normal"  # the collect-then-deliver advisory UX (default for real channels)
+    DEVELOPER = "developer"  # today's incremental structured-command harness (default here)
 
 
 class ConversationConfig(BaseModel):
@@ -59,4 +76,4 @@ class ConversationConfig(BaseModel):
 
 DEFAULT_CONVERSATION_CONFIG = ConversationConfig()
 
-__all__ = ["ConversationConfig", "DEFAULT_CONVERSATION_CONFIG"]
+__all__ = ["ConversationConfig", "ConversationMode", "DEFAULT_CONVERSATION_CONFIG"]
